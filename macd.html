@@ -1,0 +1,1447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MACD计算工具</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 16px; color: #1a73e8; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .field { flex: 1; min-width: 140px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+  .price-change { font-size: 12px; margin-top: 4px; min-height: 18px; font-family: Consolas, monospace; }
+  input, textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, textarea:focus { outline: none; border-color: #1a73e8; }
+  textarea { resize: vertical; min-height: 80px; font-family: Consolas, monospace; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  .params input { max-width: 80px; }
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .result-card {
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 12px;
+    border-left: 3px solid #1a73e8;
+  }
+  .result-card.tomorrow { border-left-color: #e8453c; }
+  .result-card h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .metric { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+  .metric .label { color: #888; }
+  .metric .value { font-family: Consolas, monospace; font-weight: 600; }
+  .positive { color: #e8453c; }
+  .negative { color: #34a853; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 8px 10px;
+    text-align: right;
+    border-bottom: 1px solid #eee;
+    font-family: Consolas, monospace;
+  }
+  th { background: #f8f9fa; color: #666; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #eee; }
+  .tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; }
+  .chart-wrap { margin-top: 16px; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #eee; }
+  .chart-wrap h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .chart-canvas-wrap { position: relative; height: 360px; }
+  .legend { display: flex; gap: 16px; margin-bottom: 8px; font-size: 12px; color: #666; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-color { width: 14px; height: 3px; border-radius: 1px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <h1>MACD计算工具</h1>
+
+  <!-- 股票数据拉取 -->
+  <div class="panel">
+    <h2>股票数据拉取（A股）</h2>
+    <div class="row">
+      <div class="field" style="flex:2">
+        <label>股票代码 / 名称</label>
+        <input type="text" id="stockInput" placeholder="例如: 600000 或 浦发银行" autocomplete="off">
+      </div>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end;">
+        <button id="fetchBtn" onclick="fetchStock()">拉取数据</button>
+      </div>
+    </div>
+
+    <!-- 数据范围模式切换 -->
+    <div class="row" style="align-items:center; margin-top:4px;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="recent" checked onchange="onRangeModeChange()"> 最近
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最近模式：数量 + 单位 -->
+    <div id="recentModeRow" class="row">
+      <div class="field" style="flex:0 0 120px;">
+        <label>数量</label>
+        <input type="number" id="rangeCount" value="60" min="1" oninput="updateRangeUI()">
+      </div>
+      <div class="field" style="flex:0 0 120px;">
+        <label>单位</label>
+        <select id="rangeUnit" onchange="updateRangeUI()">
+          <option value="day">天</option>
+          <option value="month">月</option>
+          <option value="quarter">季度</option>
+          <option value="year">年</option>
+        </select>
+      </div>
+      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px;">≈ 60 个交易日</div>
+    </div>
+
+    <!-- 时间段模式：起止日期 -->
+    <div id="periodModeRow" class="row" style="display:none;">
+      <div class="field" style="flex:0 0 200px;">
+        <label>起始日期</label>
+        <input type="date" id="begDate">
+      </div>
+      <div class="field" style="flex:0 0 200px;">
+        <label>结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+    </div>
+
+    <div id="stockInfo" class="hint">输入6位代码或名称，自动拉取最近60个交易日收盘价（数据源：东方财富）</div>
+  </div>
+
+  <!-- 历史数据（隐藏，由股票拉取自动填充） -->
+  <input type="hidden" id="historyData">
+
+  <!-- 参数配置 -->
+  <div class="panel">
+    <h2>MACD参数设置</h2>
+    <div class="row params">
+      <div class="field">
+        <label>快线周期 (FAST)</label>
+        <input type="number" id="fastPeriod" value="12" min="2">
+      </div>
+      <div class="field">
+        <label>慢线周期 (SLOW)</label>
+        <input type="number" id="slowPeriod" value="26" min="2">
+      </div>
+      <div class="field">
+        <label>信号线周期 (SIGNAL)</label>
+        <input type="number" id="signalPeriod" value="9" min="2">
+      </div>
+    </div>
+    <div class="actions">
+      <button class="secondary" onclick="resetParams()">恢复默认</button>
+      <button class="secondary" onclick="setShortParams()">短线参数(6/12/5)</button>
+      <button class="secondary" onclick="setAStockParams()">A股短线(3/8/3)</button>
+      <button class="secondary" onclick="setALongParams()">A股长线(10/20/7)</button>
+    </div>
+  </div>
+
+  <!-- 计算方式 -->
+  <div class="panel">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('single')">单价格计算</div>
+      <div class="tab" onclick="switchTab('range')">价格区间扫描</div>
+    </div>
+
+    <!-- 单价格 -->
+    <div id="tab-single" class="tab-content active">
+      <div class="row">
+        <div class="field">
+          <label id="predictPriceLabel">预测收盘价</label>
+          <input type="number" id="tomorrowPrice" step="0.01" placeholder="例如: 101.50" oninput="updatePriceChange('tomorrowPrice','tomorrowChange')">
+          <div id="tomorrowChange" class="price-change"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="calculateSingle()">计算MACD</button>
+      </div>
+    </div>
+
+    <!-- 价格区间 -->
+    <div id="tab-range" class="tab-content">
+      <div class="row">
+        <div class="field">
+          <label>最低价格</label>
+          <input type="number" id="priceLow" step="0.01" placeholder="例如: 99.00" oninput="updatePriceChange('priceLow','priceLowChange')">
+          <div id="priceLowChange" class="price-change"></div>
+        </div>
+        <div class="field">
+          <label>最高价格</label>
+          <input type="number" id="priceHigh" step="0.01" placeholder="例如: 102.00" oninput="updatePriceChange('priceHigh','priceHighChange')">
+          <div id="priceHighChange" class="price-change"></div>
+        </div>
+        <div class="field">
+          <label>步长</label>
+          <input type="number" id="priceStep" step="0.01" value="0.50">
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="calculateRange()">扫描计算</button>
+      </div>
+    </div>
+
+    <div id="errorMsg" class="error"></div>
+  </div>
+
+  <!-- 结果展示 -->
+  <div id="resultArea"></div>
+</div>
+
+<script>
+// ============ MACD计算核心 ============
+function calcEMA(values, period) {
+  const k = 2 / (period + 1);
+  const ema = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    ema.push(values[i] * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
+
+function calcMACD(closes, fast, slow, signal) {
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  const dif = closes.map((_, i) => emaFast[i] - emaSlow[i]);
+  const dea = calcEMA(dif, signal);
+  const macd = dif.map((d, i) => (d - dea[i]) * 2);
+  return { dif, dea, macd };
+}
+
+function predictMACD(history, tomorrowPrice, fast, slow, signal) {
+  if (history.length < slow) {
+    throw new Error(`历史数据至少需要 ${slow} 条，当前 ${history.length} 条`);
+  }
+  // 今日
+  const r1 = calcMACD(history, fast, slow, signal);
+  const todayIdx = history.length - 1;
+  // 明日
+  const extended = history.concat([tomorrowPrice]);
+  const r2 = calcMACD(extended, fast, slow, signal);
+  const tomorrowIdx = extended.length - 1;
+  return {
+    today: { dif: r1.dif[todayIdx], dea: r1.dea[todayIdx], macd: r1.macd[todayIdx] },
+    tomorrow: { dif: r2.dif[tomorrowIdx], dea: r2.dea[tomorrowIdx], macd: r2.macd[tomorrowIdx] }
+  };
+}
+
+// ============ 股票数据拉取 ============
+async function searchStock(keyword) {
+  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(keyword)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=10`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const table = data.QuotationCodeTable || {};
+  const list = table.Data || [];
+  // 只保留A股
+  return list.filter(r => r.Classify === 'AStock' && r.Code && r.Code.length === 6);
+}
+
+// 根据股票代码和名称判断涨跌停限制比例
+function getPriceLimit(code, name) {
+  if (!code) return 0.05;
+  // 新股（名称以N开头）无涨跌限制，默认用±5%
+  if (name && /^N/i.test(name)) return 0.05;
+  const isST = name && /(^|[\s])ST/i.test(name);
+  if (isST) return 0.05;
+  if (code.startsWith('688') || code.startsWith('30')) return 0.20; // 科创板/创业板
+  if (code.startsWith('8') || code.startsWith('4')) return 0.30;    // 北交所
+  return 0.10; // 主板
+}
+
+// 实时显示价格相对昨收的涨跌额和涨跌幅
+function updatePriceChange(inputId, displayId) {
+  const input = document.getElementById(inputId);
+  const display = document.getElementById(displayId);
+  if (!display) return;
+  const lastClose = window.__lastClose;
+  if (!lastClose) { display.textContent = ''; return; }
+  const price = parseFloat(input.value);
+  if (isNaN(price)) { display.textContent = ''; return; }
+  const change = price - lastClose;
+  const pct = (change / lastClose) * 100;
+  const color = change > 0 ? '#e8453c' : (change < 0 ? '#34a853' : '#666');
+  const sign = change > 0 ? '+' : '';
+  // 判断是否触及涨跌停（直接比较价格，避免四舍五入导致的精度问题）
+  const limit = window.__priceLimit || 0.10;
+  const limitUp = Math.round(lastClose * (1 + limit) * 100) / 100;
+  const limitDown = Math.round(lastClose * (1 - limit) * 100) / 100;
+  let tag = '';
+  if (Math.abs(price - limitUp) < 0.005) tag = ' (涨停)';
+  else if (Math.abs(price - limitDown) < 0.005) tag = ' (跌停)';
+  display.innerHTML = `<span style="color:${color}">${sign}${change.toFixed(2)} (${sign}${pct.toFixed(2)}%)${tag}</span> <span style="color:#999">昨收 ${lastClose.toFixed(2)}</span>`;
+}
+
+function getSecid(code) {
+  // 沪市: 60主板, 68科创板, 9开头B股, 11开头转债
+  if (code.startsWith('6') || code.startsWith('9') || code.startsWith('11')) return '1.' + code;
+  // 深市: 00主板, 30创业板; 北交所: 8/4开头
+  return '0.' + code;
+}
+
+// ============ 数据范围配置 ============
+// 单位 → 交易日估算（A股约：1月≈22天，1季度≈66天，1年≈250天）
+const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
+const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
+
+// 最小历史数据条数下限（基于慢线周期，保证 MACD 可计算且有冗余）
+function getMinHistoryDays() {
+  const slow = parseInt(document.getElementById('slowPeriod').value) || 26;
+  return slow + 10;
+}
+
+// 最近模式：估算的交易日数（应用最小下限）
+function estimateTradingDays() {
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  const raw = count * (UNIT_TRADING_DAYS[unit] || 1);
+  return Math.max(raw, getMinHistoryDays());
+}
+
+// 当前选中的模式
+function getRangeMode() {
+  const el = document.querySelector('input[name="rangeMode"]:checked');
+  return el ? el.value : 'recent';
+}
+
+// 模式切换
+function onRangeModeChange() {
+  const mode = getRangeMode();
+  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
+  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
+  updateRangeUI();
+}
+
+// 更新按钮文案和提示
+function updateRangeUI() {
+  const mode = getRangeMode();
+  const btn = document.getElementById('fetchBtn');
+  const hint = document.getElementById('stockInfo');
+  if (mode === 'recent') {
+    const count = parseInt(document.getElementById('rangeCount').value) || 0;
+    const unit = document.getElementById('rangeUnit').value;
+    const raw = count * (UNIT_TRADING_DAYS[unit] || 1);
+    const days = estimateTradingDays();
+    const minDays = getMinHistoryDays();
+    const extended = days > raw ? `（已扩展至最小 ${minDays} 条）` : '';
+    btn.textContent = `拉取 ${count} ${UNIT_LABEL[unit]} 数据`;
+    document.getElementById('recentHint').textContent = `≈ ${days} 个交易日${extended}`;
+    hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）收盘价（数据源：东方财富）`;
+  } else {
+    btn.textContent = '拉取时间段数据';
+    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K收盘价（数据源：东方财富）';
+  }
+}
+
+// 把 Date 转成 YYYYMMDD（东方财富 beg/end 参数格式）
+function dateToYYYYMMDD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
+
+// 根据当前模式构造请求参数 { beg, end, lmt }
+function buildRangeParams() {
+  const mode = getRangeMode();
+  if (mode === 'period') {
+    const begInput = document.getElementById('begDate').value;
+    const endInput = document.getElementById('endDate').value;
+    if (!begInput || !endInput) throw new Error('请选择起止日期');
+    const beg = begInput.replace(/-/g, '');
+    const end = endInput.replace(/-/g, '');
+    if (beg > end) throw new Error('起始日期不能晚于结束日期');
+    return { beg, end, lmt: 10000 };
+  }
+  // 最近模式：交易日约占自然日 5/7，加 30 天节假日缓冲
+  const tradingDays = estimateTradingDays();
+  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+  const begDate = new Date();
+  begDate.setDate(begDate.getDate() - naturalDays);
+  return { beg: dateToYYYYMMDD(begDate), end: '20500101', lmt: tradingDays };
+}
+
+// 交易时间判断：9:30-11:30, 13:00-15:00 为盘中，否则预测下一交易日
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getNextTradingDay(d) {
+  const next = new Date(d);
+  next.setDate(next.getDate() + 1);
+  while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+function getTradingContext() {
+  const now = new Date();
+  const day = now.getDay();
+  const timeNum = now.getHours() * 100 + now.getMinutes();
+  const isWeekday = day >= 1 && day <= 5;
+  // 实时盘中（有分时行情）
+  const inTrading = isWeekday &&
+    ((timeNum >= 930 && timeNum <= 1130) || (timeNum >= 1300 && timeNum <= 1500));
+  // 交易日时段（9:30开盘到15:00收盘，含午间休市）
+  const inTradingDay = isWeekday && timeNum >= 930 && timeNum <= 1500;
+
+  if (inTradingDay) {
+    // 只要还没收盘（含午休），都预测今日
+    return {
+      inTrading: inTrading,
+      inTradingDay: true,
+      todayDate: fmtDate(now),
+      predictDate: fmtDate(now),
+      predictLabel: inTrading ? '今日(盘中)' : '今日(午休)',
+      priceLabel: '今日预测收盘价'
+    };
+  }
+  // 非交易日时段：盘前或盘后
+  let nextDay;
+  if (isWeekday && timeNum < 930) {
+    nextDay = now; // 工作日盘前，今日就是下一交易日
+  } else {
+    nextDay = getNextTradingDay(now);
+  }
+  return {
+    inTrading: false,
+    inTradingDay: false,
+    todayDate: fmtDate(now),
+    predictDate: fmtDate(nextDay),
+    predictLabel: fmtDate(nextDay) + '(预测)',
+    priceLabel: `${fmtDate(nextDay)}预测收盘价`
+  };
+}
+
+// 默认上下文（页面加载时设置）
+window.__tradingContext = getTradingContext();
+
+async function fetchStock() {
+  clearError();
+  const infoEl = document.getElementById('stockInfo');
+  const input = document.getElementById('stockInput').value.trim();
+  if (!input) { showError('请输入股票代码或名称'); return; }
+
+  infoEl.textContent = '正在拉取数据...';
+  try {
+    let code, name, secid;
+    if (/^\d{6}$/.test(input)) {
+      code = input;
+      secid = getSecid(code);
+    } else {
+      const stocks = await searchStock(input);
+      if (stocks.length === 0) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
+      const match = stocks.find(r => r.Name === input) || stocks[0];
+      code = match.Code;
+      name = match.Name;
+      secid = match.QuoteID; // 形如 "1.600000"
+    }
+
+    const range = buildRangeParams();
+    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&beg=${range.beg}&end=${range.end}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&lmt=${range.lmt}`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!data.data || !data.data.klines || data.data.klines.length === 0) {
+      showError('未获取到K线数据，请检查代码是否正确');
+      infoEl.textContent = '';
+      return;
+    }
+
+    name = name || data.data.name || code;
+    const klines = data.data.klines;
+    // kline格式: 日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手率
+    let ohlc = klines.map(k => {
+      const p = k.split(',');
+      return {
+        date: p[0], open: +p[1], close: +p[2], high: +p[3], low: +p[4],
+        volume: +p[5], amount: +p[6], amplitude: +p[7], pctChange: +p[8], change: +p[9], turnover: +p[10]
+      };
+    });
+    let closes = ohlc.map(k => k.close);
+    let dates = ohlc.map(k => k.date);
+
+    // 获取交易上下文
+    const ctx = getTradingContext();
+    window.__tradingContext = ctx;
+
+    // 盘中或午休：若最后一根K线是今日（未收盘），将其从历史中剥离作为当前价
+    let currentPrice = closes[closes.length - 1];
+    let lastCompleteDate = dates[dates.length - 1];
+    if (ctx.inTradingDay && dates[dates.length - 1] === ctx.todayDate) {
+      currentPrice = closes.pop();
+      dates.pop();
+      ohlc.pop();
+      lastCompleteDate = dates[dates.length - 1];
+    }
+    const lastClose = closes[closes.length - 1];
+
+    // 存储日期和OHLC供图表使用
+    window.__historyDates = dates;
+    window.__historyOhlc = ohlc;
+
+    document.getElementById('historyData').value = closes.map(c => c.toFixed(4)).join(', ');
+    document.getElementById('tomorrowPrice').value = currentPrice.toFixed(2);
+    // 默认价格区间 = 涨跌停价格（根据板块和是否ST判断）
+    const limit = getPriceLimit(code, name);
+    document.getElementById('priceLow').value = (Math.round(lastClose * (1 - limit) * 100) / 100).toFixed(2);
+    document.getElementById('priceHigh').value = (Math.round(lastClose * (1 + limit) * 100) / 100).toFixed(2);
+    // 存储昨收价和涨跌限制，供涨跌显示使用
+    window.__lastClose = lastClose;
+    window.__priceLimit = limit;
+
+    // 更新输入标签
+    document.getElementById('predictPriceLabel').textContent = ctx.priceLabel;
+
+    // 触发涨跌显示更新
+    updatePriceChange('tomorrowPrice', 'tomorrowChange');
+    updatePriceChange('priceLow', 'priceLowChange');
+    updatePriceChange('priceHigh', 'priceHighChange');
+
+    const timeStatus = ctx.inTradingDay
+      ? `${ctx.inTrading ? '盘中' : '午休'} | 最新完整收盘: ${lastClose.toFixed(2)} (${lastCompleteDate}) | 当前价: ${currentPrice.toFixed(2)}`
+      : `最新收盘: ${lastClose.toFixed(2)} (${lastCompleteDate})`;
+    infoEl.innerHTML = `<strong style="color:#1a73e8">${name} (${code})</strong> | ${timeStatus} | 预测日: <strong style="color:#e8453c">${ctx.predictDate}</strong> | 历史 ${closes.length} 条`;
+  } catch (e) {
+    showError('拉取失败: ' + e.message + '（如遇CORS限制，可改用Python代理方案）');
+    infoEl.textContent = '';
+  }
+}
+
+// ============ 工具函数 ============
+function parseHistory() {
+  const text = document.getElementById('historyData').value.trim();
+  if (!text) throw new Error('请输入历史收盘价数据');
+  const values = text.split(/[\s,，;；\n\r]+/)
+    .filter(s => s.length > 0)
+    .map(s => parseFloat(s))
+    .filter(v => !isNaN(v));
+  if (values.length === 0) throw new Error('无法解析有效数据');
+  return values;
+}
+
+function getParams() {
+  return {
+    fast: parseInt(document.getElementById('fastPeriod').value),
+    slow: parseInt(document.getElementById('slowPeriod').value),
+    signal: parseInt(document.getElementById('signalPeriod').value)
+  };
+}
+
+function fmt(v, decimals = 4) {
+  return Number(v).toFixed(decimals);
+}
+
+function colorClass(v) {
+  return v >= 0 ? 'positive' : 'negative';
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function clearError() {
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+// 全局图表实例
+const charts = {};
+const klineCharts = {};
+
+function getHistoryDates(n) {
+  // 取最近n个日期标签，若无历史日期则用序号
+  const dates = window.__historyDates || [];
+  if (dates.length === 0) return null;
+  return dates.slice(-n);
+}
+
+// ============ K线图绘制（原生Canvas + 交互） ============
+function drawCandlestick(canvasId, ohlcData, labels, predictPrice, predictLabel, instanceKey = 'kline') {
+  // 清理旧实例
+  if (klineCharts[instanceKey]) {
+    const old = klineCharts[instanceKey];
+    if (old.canvas) {
+      old.canvas.onmousemove = null;
+      old.canvas.onmouseleave = null;
+    }
+    delete klineCharts[instanceKey];
+  }
+
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth;
+  const cssH = canvas.parentElement.clientHeight;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const W = cssW, H = cssH;
+  const padL = 44, padR = 44, padT = 10, padB = 24;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  // 价格范围
+  const allHighs = ohlcData.map(k => k.high);
+  const allLows = ohlcData.map(k => k.low);
+  if (predictPrice != null) { allHighs.push(predictPrice); allLows.push(predictPrice); }
+  let maxP = Math.max(...allHighs);
+  let minP = Math.min(...allLows);
+  const rangeP = maxP - minP || 1;
+  maxP += rangeP * 0.05;
+  minP -= rangeP * 0.05;
+
+  const n = ohlcData.length;
+  const slot = chartW / n;
+  const bodyW = Math.max(2, slot * 0.6);
+
+  const yOf = (price) => padT + (maxP - price) / (maxP - minP) * chartH;
+  const xOf = (i) => padL + slot * (i + 0.5);
+
+  // 存储实例信息供交互使用
+  const instance = { canvas, ctx, ohlcData, labels, predictPrice, predictLabel, padL, padR, padT, padB, chartW, chartH, maxP, minP, n, slot, bodyW, xOf, yOf, hoverIdx: -1, W, H };
+  klineCharts[instanceKey] = instance;
+
+  // 渲染函数
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+
+    // 网格 + Y轴
+    ctx.strokeStyle = '#f0f0f0';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const gridCount = 5;
+    for (let i = 0; i <= gridCount; i++) {
+      const price = maxP - (maxP - minP) * i / gridCount;
+      const y = padT + chartH * i / gridCount;
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + chartW, y);
+      ctx.stroke();
+      ctx.fillText(price.toFixed(2), padL + chartW + 4, y);
+    }
+
+    // 悬停十字线
+    if (instance.hoverIdx >= 0) {
+      const hx = xOf(instance.hoverIdx);
+      ctx.strokeStyle = '#999';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(hx, padT);
+      ctx.lineTo(hx, padT + chartH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 绘制K线
+    ohlcData.forEach((k, i) => {
+      const x = xOf(i);
+      const isUp = k.close >= k.open;
+      const isPredict = k.isPredict === true;
+      const isHover = i === instance.hoverIdx;
+      const color = isPredict ? '#ff9800' : (isUp ? '#e8453c' : '#34a853');
+      ctx.strokeStyle = color;
+      ctx.fillStyle = isPredict ? (isHover ? 'rgba(255,152,0,0.5)' : 'rgba(255,152,0,0.25)') : (isHover ? color : color);
+      ctx.lineWidth = isPredict ? 1.5 : 1;
+
+      // 影线
+      ctx.beginPath();
+      ctx.moveTo(x, yOf(k.high));
+      ctx.lineTo(x, yOf(k.low));
+      ctx.stroke();
+
+      // 实体（悬停时加粗）
+      const yOpen = yOf(k.open);
+      const yClose = yOf(k.close);
+      const bodyTop = Math.min(yOpen, yClose);
+      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+      const bw = isHover ? bodyW * 1.15 : bodyW;
+      ctx.fillRect(x - bw / 2, bodyTop, bw, bodyH);
+      ctx.strokeRect(x - bw / 2, bodyTop, bw, bodyH);
+
+      if (isPredict) {
+        ctx.fillStyle = '#ff9800';
+        ctx.font = 'bold 10px Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(k.close.toFixed(2), x + bodyW / 2 + 4, yClose - 8);
+      }
+    });
+
+    // 预测价格横虚线（兼容旧调用）
+    if (predictPrice != null) {
+      const px = xOf(ohlcData.length);
+      const py = yOf(predictPrice);
+      ctx.strokeStyle = '#ff9800';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padL, py);
+      ctx.lineTo(padL + chartW, py);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = '#ff9800';
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ff9800';
+      ctx.font = 'bold 10px Consolas, monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(predictPrice.toFixed(2), px + 6, py - 8);
+    }
+
+    // X轴日期标签
+    ctx.font = '10px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const labelStep = Math.max(1, Math.ceil(n / 8));
+    for (let i = 0; i < n; i += labelStep) {
+      const label = labels[i] || '';
+      const shortLabel = label.length > 5 ? label.slice(5) : label;
+      ctx.fillStyle = (ohlcData[i] && ohlcData[i].isPredict) ? '#ff9800' : '#888';
+      ctx.fillText(shortLabel, xOf(i), padT + chartH + 4);
+    }
+
+    // 悬停tooltip
+    if (instance.hoverIdx >= 0) {
+      drawTooltip(instance);
+    }
+  }
+
+  // 绘制信息卡片
+  function drawTooltip(inst) {
+    const k = inst.ohlcData[inst.hoverIdx];
+    if (!k) return;
+    const isPredict = k.isPredict === true;
+    const isUp = k.close >= k.open;
+    const color = isPredict ? '#ff9800' : (isUp ? '#e8453c' : '#34a853');
+    const change = k.change != null ? k.change : (k.close - k.open);
+    const pctChange = k.pctChange != null ? k.pctChange : (k.open ? (k.close - k.open) / k.open * 100 : 0);
+
+    // 构建信息行
+    const rows = [
+      { label: '日期', value: k.date, color: '#333' },
+      { label: '开盘', value: k.open.toFixed(2), color: k.close >= k.open ? '#e8453c' : '#34a853' },
+      { label: '收盘', value: k.close.toFixed(2), color: k.close >= k.open ? '#e8453c' : '#34a853' },
+      { label: '最高', value: k.high.toFixed(2), color: '#e8453c' },
+      { label: '最低', value: k.low.toFixed(2), color: '#34a853' },
+      { label: '涨跌额', value: (change >= 0 ? '+' : '') + change.toFixed(2), color: change >= 0 ? '#e8453c' : '#34a853' },
+      { label: '涨跌幅', value: (pctChange >= 0 ? '+' : '') + pctChange.toFixed(2) + '%', color: pctChange >= 0 ? '#e8453c' : '#34a853' },
+    ];
+    if (k.volume != null) {
+      rows.push({ label: '成交量', value: formatVol(k.volume), color: '#666' });
+    }
+    if (k.amount != null) {
+      rows.push({ label: '成交额', value: formatAmount(k.amount), color: '#666' });
+    }
+    if (k.turnover != null) {
+      rows.push({ label: '换手率', value: k.turnover.toFixed(2) + '%', color: '#9c27b0' });
+    }
+    if (k.amplitude != null) {
+      rows.push({ label: '振幅', value: k.amplitude.toFixed(2) + '%', color: '#666' });
+    }
+    if (isPredict) {
+      rows.unshift({ label: '★ 预测日', value: '', color: '#ff9800' });
+    }
+
+    // 计算tooltip尺寸
+    const lineH = 16;
+    const padX = 10, padY = 8;
+    const titleH = 0;
+    ctx.font = '12px Consolas, monospace';
+    let maxLabelW = 0, maxValueW = 0;
+    rows.forEach(r => {
+      const lw = ctx.measureText(r.label).width;
+      const vw = ctx.measureText(r.value).width;
+      if (lw > maxLabelW) maxLabelW = lw;
+      if (vw > maxValueW) maxValueW = vw;
+    });
+    const boxW = maxLabelW + maxValueW + 24;
+    const boxH = rows.length * lineH + padY * 2;
+
+    // 定位（优先在K线右侧，不够则左侧）
+    const kx = inst.xOf(inst.hoverIdx);
+    let bx = kx + 16;
+    if (bx + boxW > inst.W - inst.padR) bx = kx - 16 - boxW;
+    if (bx < inst.padL) bx = inst.padL;
+    let by = inst.padT + 8;
+    if (by + boxH > inst.padT + inst.chartH) by = inst.padT + inst.chartH - boxH;
+
+    // 绘制背景
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(bx, by, boxW, boxH);
+    ctx.fill();
+    ctx.stroke();
+
+    // 绘制文字
+    ctx.font = '12px Consolas, monospace';
+    ctx.textBaseline = 'middle';
+    rows.forEach((r, i) => {
+      const y = by + padY + i * lineH + lineH / 2;
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'left';
+      ctx.fillText(r.label, bx + padX, y);
+      ctx.fillStyle = r.color;
+      ctx.textAlign = 'right';
+      ctx.fillText(r.value, bx + boxW - padX, y);
+    });
+  }
+
+  function formatVol(v) {
+    if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+    if (v >= 1e4) return (v / 1e4).toFixed(2) + '万';
+    return v.toFixed(0);
+  }
+  function formatAmount(v) {
+    if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+    if (v >= 1e4) return (v / 1e4).toFixed(2) + '万';
+    return v.toFixed(0);
+  }
+
+  // 鼠标交互
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx < padL || mx > padL + chartW || my < padT || my > padT + chartH) {
+      if (instance.hoverIdx !== -1) { instance.hoverIdx = -1; render(); }
+      return;
+    }
+    const idx = Math.floor((mx - padL) / slot);
+    if (idx >= 0 && idx < n && idx !== instance.hoverIdx) {
+      instance.hoverIdx = idx;
+      render();
+    }
+  };
+  canvas.onmouseleave = () => {
+    if (instance.hoverIdx !== -1) { instance.hoverIdx = -1; render(); }
+  };
+
+  render();
+}
+
+function buildKlineHtml(canvasId, title, predictLabel) {
+  const predictLegend = predictLabel
+    ? `<div class="legend-item"><span class="legend-color" style="background:#ff9800"></span>${predictLabel}</div>`
+    : '';
+  const legend = `<div class="legend">
+    <div class="legend-item"><span class="legend-color" style="background:#e8453c"></span>上涨</div>
+    <div class="legend-item"><span class="legend-color" style="background:#34a853"></span>下跌</div>
+    ${predictLegend}
+  </div>`;
+  return `
+    <div class="chart-wrap">
+      <h3>${title}</h3>
+      ${legend}
+      <div class="chart-canvas-wrap" style="height:240px"><canvas id="${canvasId}"></canvas></div>
+    </div>
+  `;
+}
+
+function renderMacdChart(canvasId, labels, difData, deaData, macdData, predictLabel, instanceKey = 'main', showRate = true, rangeBox = null) {
+  if (charts[instanceKey]) { charts[instanceKey].destroy(); delete charts[instanceKey]; }
+
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+
+  // MACD柱颜色：正红负绿
+  const barColors = macdData.map(v => v >= 0 ? 'rgba(232,69,60,0.5)' : 'rgba(52,168,83,0.5)');
+  const barBorderColors = macdData.map(v => v >= 0 ? '#e8453c' : '#34a853');
+
+  // MACD变化速率 = 当日MACD - 前日MACD
+  const rateData = macdData.map((v, i) => i < 1 ? 0 : v - macdData[i - 1]);
+
+  // 预测点用虚线标记
+  const lastIdx = labels.length - 1;
+  const pointStyles = labels.map((l, i) => i === lastIdx && predictLabel ? 'rectRot' : 'circle');
+  const pointRadii = labels.map((l, i) => i === lastIdx && predictLabel ? 6 : 0);
+  const pointBg = labels.map((l, i) => i === lastIdx && predictLabel ? '#ff9800' : '#1a73e8');
+
+  const datasets = [
+    {
+      type: 'bar',
+      label: 'MACD柱',
+      data: macdData,
+      backgroundColor: barColors,
+      borderColor: barBorderColors,
+      borderWidth: 1,
+      order: 4,
+      yAxisID: 'y',
+    },
+    {
+      type: 'line',
+      label: 'DIF',
+      data: difData,
+      borderColor: '#1a73e8',
+      backgroundColor: '#1a73e8',
+      borderWidth: 2,
+      tension: 0.2,
+      pointRadius: pointRadii,
+      pointStyle: pointStyles,
+      pointBackgroundColor: pointBg,
+      order: 1,
+      yAxisID: 'y',
+    },
+    {
+      type: 'line',
+      label: 'DEA',
+      data: deaData,
+      borderColor: '#e8453c',
+      backgroundColor: '#e8453c',
+      borderWidth: 2,
+      tension: 0.2,
+      pointRadius: pointRadii,
+      pointStyle: pointStyles,
+      pointBackgroundColor: pointBg,
+      order: 2,
+      yAxisID: 'y',
+    }
+  ];
+
+  // 速率线（紫色，虚线，用副坐标轴）
+  if (showRate) {
+    datasets.push({
+      type: 'line',
+      label: 'MACD变化速率',
+      data: rateData,
+      borderColor: '#9c27b0',
+      backgroundColor: '#9c27b0',
+      borderWidth: 2,
+      borderDash: [6, 3],
+      tension: 0.2,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      order: 3,
+      yAxisID: 'y1',
+    });
+  }
+
+  const scales = {
+    x: {
+      grid: { display: false },
+      ticks: {
+        maxRotation: 45,
+        minRotation: 0,
+        font: { size: 10 },
+        autoSkip: true,
+        maxTicksLimit: 9,
+        callback: function(val) {
+          const label = this.getLabelForValue(val);
+          if (!label) return '';
+          // 取 MM-DD 部分（去掉年份和"(预测)"后缀）
+          const datePart = label.split('(')[0];
+          return datePart.length > 5 ? datePart.slice(5) : datePart;
+        }
+      }
+    },
+    y: {
+      position: 'right',
+      grid: { color: '#f0f0f0' },
+      ticks: { font: { size: 10 }, callback: (v) => Number(v).toFixed(3) },
+      title: { display: true, text: 'MACD', font: { size: 10 }, color: '#888' }
+    }
+  };
+  if (showRate) {
+    scales.y1 = {
+      position: 'left',
+      grid: { drawOnChartArea: false },
+      ticks: { font: { size: 10 }, color: '#9c27b0', callback: (v) => Number(v).toFixed(3) },
+      title: { display: true, text: '变化速率', font: { size: 10 }, color: '#9c27b0' }
+    };
+  }
+
+  const plugins = [];
+  if (rangeBox) {
+    plugins.push({
+      id: 'rangeBox_' + instanceKey,
+      afterDatasetsDraw(chart) {
+        const { scales, ctx, data } = chart;
+        const xScale = scales.x;
+        const yScale = scales.y;
+        const barIndex = rangeBox.barIndex;
+        const x = xScale.getPixelForValue(barIndex);
+        const yMax = yScale.getPixelForValue(rangeBox.maxValue);
+        const yMin = yScale.getPixelForValue(rangeBox.minValue);
+        const barWidth = xScale.width / data.labels.length * 0.5;
+
+        ctx.save();
+        // 半透明黑色填充
+        ctx.fillStyle = 'rgba(0,0,0,0.08)';
+        ctx.fillRect(x - barWidth / 2, yMax, barWidth, yMin - yMax);
+        // 黑色虚线边框
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 3]);
+        ctx.strokeRect(x - barWidth / 2, yMax, barWidth, yMin - yMax);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    });
+  }
+
+  macdChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { left: 0, right: 0 } },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(4)}`
+          }
+        }
+      },
+      scales
+    },
+    plugins
+  });
+  charts[instanceKey] = macdChart;
+}
+
+function buildChartHtml(canvasId, title, predictLabel) {
+  const predictLegend = predictLabel
+    ? `<div class="legend-item"><span class="legend-color" style="background:#ff9800"></span>${predictLabel}</div>`
+    : '';
+  const legend = `<div class="legend">
+         <div class="legend-item"><span class="legend-color" style="background:#1a73e8"></span>DIF</div>
+         <div class="legend-item"><span class="legend-color" style="background:#e8453c"></span>DEA</div>
+         <div class="legend-item"><span class="legend-color" style="background:rgba(232,69,60,0.7)"></span>MACD红柱</div>
+         <div class="legend-item"><span class="legend-color" style="background:rgba(52,168,83,0.7)"></span>MACD绿柱</div>
+         <div class="legend-item"><span class="legend-color" style="background:#9c27b0"></span>变化速率(左轴)</div>
+         ${predictLegend}
+       </div>`;
+  return `
+    <div class="chart-wrap">
+      <h3>${title}</h3>
+      ${legend}
+      <div class="chart-canvas-wrap"><canvas id="${canvasId}"></canvas></div>
+    </div>
+  `;
+}
+
+// ============ 单价格计算 ============
+function calculateSingle() {
+  clearError();
+  try {
+    const history = parseHistory();
+    const { fast, slow, signal } = getParams();
+    const price = parseFloat(document.getElementById('tomorrowPrice').value);
+    if (isNaN(price)) throw new Error('请输入有效的明日价格');
+
+    const result = predictMACD(history, price, fast, slow, signal);
+    const lastClose = history[history.length - 1];
+
+    // 交易上下文
+    const ctx = window.__tradingContext || getTradingContext();
+
+    // 计算历史MACD序列（含预测点），至少显示最近30个交易日
+    const showDays = Math.min(30, history.length);
+    const histStart = history.length - showDays;
+    const histSlice = history.slice(histStart);
+    const fullCloses = history.concat([price]);
+    const fullMacd = calcMACD(fullCloses, fast, slow, signal);
+    const difAll = fullMacd.dif.slice(-showDays - 1);
+    const deaAll = fullMacd.dea.slice(-showDays - 1);
+    const macdAll = fullMacd.macd.slice(-showDays - 1);
+
+    // 日期标签
+    const histDates = (window.__historyDates || []);
+    let labels;
+    if (histDates.length >= history.length) {
+      const dateSlice = histDates.slice(histStart);
+      labels = dateSlice.concat([ctx.predictLabel]);
+    } else {
+      labels = histSlice.map((_, i) => `T-${showDays - i}`).concat([ctx.predictLabel]);
+    }
+
+    const todayLabel = ctx.inTrading ? '当前(盘中)' : (ctx.inTradingDay ? '当前(午休)' : '今日');
+
+    // MACD变化速率 = 预测日MACD - 今日MACD
+    const n = macdAll.length;
+    const tomorrowRate = macdAll[n - 1] - macdAll[n - 2];
+    // 今日变化速率（用于对比）
+    const todayRate = macdAll[n - 2] - macdAll[n - 3];
+
+    // K线数据（最近showDays天 + 预测日），与MACD图使用相同的labels
+    const allOhlc = window.__historyOhlc || [];
+    let klineData = allOhlc.length >= history.length ? allOhlc.slice(histStart) : [];
+    // 添加预测日K线（open=今日收盘，close=预测价格）
+    if (klineData.length > 0) {
+      const lastK = klineData[klineData.length - 1];
+      klineData.push({
+        date: ctx.predictDate,
+        open: lastK.close,
+        close: price,
+        high: Math.max(lastK.close, price),
+        low: Math.min(lastK.close, price),
+        isPredict: true
+      });
+    }
+    const klineLabels = labels;
+
+    document.getElementById('resultArea').innerHTML = `
+      <div class="panel">
+        <h2>计算结果</h2>
+        <div class="hint">最新收盘价: ${fmt(lastClose, 2)} | 参数: (${fast}, ${slow}, ${signal}) | ${ctx.priceLabel}: ${fmt(price, 2)}</div>
+        <div class="result-grid">
+          <div class="result-card">
+            <h3>${todayLabel} MACD</h3>
+            <div class="metric"><span class="label">DIF</span><span class="value ${colorClass(result.today.dif)}">${fmt(result.today.dif)}</span></div>
+            <div class="metric"><span class="label">DEA</span><span class="value ${colorClass(result.today.dea)}">${fmt(result.today.dea)}</span></div>
+            <div class="metric"><span class="label">MACD柱</span><span class="value ${colorClass(result.today.macd)}">${fmt(result.today.macd)}</span></div>
+            <div class="metric" style="border-top:1px dashed #ddd; margin-top:6px; padding-top:6px;">
+              <span class="label">变化速率</span>
+              <span class="value ${colorClass(todayRate)}">${todayRate >= 0 ? '+' : ''}${fmt(todayRate)}</span>
+            </div>
+          </div>
+          <div class="result-card tomorrow">
+            <h3>${ctx.predictDate} MACD（预测）</h3>
+            <div class="metric"><span class="label">DIF</span><span class="value ${colorClass(result.tomorrow.dif)}">${fmt(result.tomorrow.dif)}</span></div>
+            <div class="metric"><span class="label">DEA</span><span class="value ${colorClass(result.tomorrow.dea)}">${fmt(result.tomorrow.dea)}</span></div>
+            <div class="metric"><span class="label">MACD柱</span><span class="value ${colorClass(result.tomorrow.macd)}">${fmt(result.tomorrow.macd)}</span></div>
+            <div class="metric" style="border-top:1px dashed #ddd; margin-top:6px; padding-top:6px;">
+              <span class="label">变化速率</span>
+              <span class="value ${colorClass(tomorrowRate)}">${tomorrowRate >= 0 ? '+' : ''}${fmt(tomorrowRate)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:12px">
+          ${rateAnalysisText(result, ctx, todayRate, tomorrowRate)}
+        </div>
+        ${klineData.length > 0 ? buildKlineHtml('klineChartSingle', `K线图（最近${showDays}个交易日 + ${ctx.predictDate}预测）`, '预测K线') : ''}
+        ${buildChartHtml('macdChartSingle', `MACD走势图（最近${showDays}个交易日 + ${ctx.predictDate}预测）`, ctx.predictDate + '预测点')}
+      </div>
+    `;
+
+    if (klineData.length > 0) {
+      drawCandlestick('klineChartSingle', klineData, klineLabels, null, null, 'klineSingle');
+    }
+    renderMacdChart('macdChartSingle', labels, difAll, deaAll, macdAll, ctx.predictDate + '预测点', 'single');
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function analysisText(result, ctx, rate) {
+  const todayMacd = result.today.macd;
+  const tomorrowMacd = result.tomorrow.macd;
+  const todayDif = result.today.dif;
+  const tomorrowDif = result.tomorrow.dif;
+  const todayDea = result.today.dea;
+  const label = ctx ? ctx.predictLabel.replace('(预测)', '') : '明日';
+
+  let tips = [];
+  // 金叉/死叉判断
+  if (todayDif < todayDea && tomorrowDif >= result.tomorrow.dea) {
+    tips.push(`${label}可能形成金叉（DIF上穿DEA）`);
+  } else if (todayDif > todayDea && tomorrowDif <= result.tomorrow.dea) {
+    tips.push(`${label}可能形成死叉（DIF下穿DEA）`);
+  }
+  // 红绿柱变化
+  if (todayMacd < 0 && tomorrowMacd >= 0) {
+    tips.push('MACD柱由绿转红');
+  } else if (todayMacd > 0 && tomorrowMacd <= 0) {
+    tips.push('MACD柱由红转绿');
+  } else if (Math.abs(tomorrowMacd) > Math.abs(todayMacd)) {
+    tips.push(todayMacd >= 0 ? '红柱放大，多头动能增强' : '绿柱放大，空头动能增强');
+  } else {
+    tips.push(todayMacd >= 0 ? '红柱缩短，多头动能减弱' : '绿柱缩短，空头动能减弱');
+  }
+  // 速率分析
+  if (rate !== undefined) {
+    const absRate = Math.abs(rate);
+    const direction = rate >= 0 ? '上升' : '下降';
+    const speedLevel = absRate > Math.abs(todayMacd) * 0.5 ? '较快' : (absRate > Math.abs(todayMacd) * 0.2 ? '平稳' : '缓慢');
+    tips.push(`MACD变化速率${direction}${speedLevel}（${rate >= 0 ? '+' : ''}${rate.toFixed(4)}/日）`);
+  }
+  return '分析: ' + tips.join('；');
+}
+
+// 变化速率分析：MACD变大→买入，变小→卖出（只看速率方向）
+function rateAnalysisText(result, ctx, todayRate, tomorrowRate) {
+  const todayDif = result.today.dif;
+  const tomorrowDif = result.tomorrow.dif;
+  const todayDea = result.today.dea;
+  const label = ctx ? ctx.predictLabel.replace('(预测)', '') : '明日';
+
+  let tips = [];
+  // 金叉/死叉判断
+  if (todayDif < todayDea && tomorrowDif >= result.tomorrow.dea) {
+    tips.push(`${label}可能形成金叉（DIF上穿DEA）`);
+  } else if (todayDif > todayDea && tomorrowDif <= result.tomorrow.dea) {
+    tips.push(`${label}可能形成死叉（DIF下穿DEA）`);
+  }
+
+  // 变化速率分析（核心）：只看速率方向
+  // 变化速率 = 预测日MACD - 今日MACD
+  // 速率 > 0 → MACD在变大 → 买入
+  // 速率 < 0 → MACD在变小 → 卖出
+  const rateVal = tomorrowRate;
+  let signal = '';
+  let signalColor = '#666';
+  if (rateVal > 0) {
+    signal = '买入信号：MACD变大';
+    signalColor = '#e8453c';
+  } else if (rateVal < 0) {
+    signal = '卖出信号：MACD变小';
+    signalColor = '#34a853';
+  } else {
+    signal = 'MACD变化平稳，无变化迹象';
+  }
+  tips.push(`<strong style="color:${signalColor}">${signal}</strong>`);
+  tips.push(`预测日变化速率: ${rateVal >= 0 ? '+' : ''}${rateVal.toFixed(4)}（今日: ${todayRate >= 0 ? '+' : ''}${todayRate.toFixed(4)}）`);
+
+  return '分析: ' + tips.join('；');
+}
+
+// ============ 区间扫描 ============
+function calculateRange() {
+  clearError();
+  try {
+    const history = parseHistory();
+    const { fast, slow, signal } = getParams();
+    const low = parseFloat(document.getElementById('priceLow').value);
+    const high = parseFloat(document.getElementById('priceHigh').value);
+    const step = parseFloat(document.getElementById('priceStep').value);
+    if (isNaN(low) || isNaN(high)) throw new Error('请输入有效的价格区间');
+    if (isNaN(step) || step <= 0) throw new Error('步长必须大于0');
+    if (low >= high) throw new Error('最低价必须小于最高价');
+
+    const ctx = window.__tradingContext || getTradingContext();
+
+    // 先计算历史MACD（不含预测日），用于获取今日MACD值来算变化速率
+    const histMacdOnly = calcMACD(history, fast, slow, signal);
+    const todayMacdHist = histMacdOnly.macd[histMacdOnly.macd.length - 1];       // 今日MACD
+
+    // 扫描价格区间，计算每个价格对应的预测日MACD和变化速率
+    const rows = [];
+    let minMacd = Infinity, maxMacd = -Infinity;
+    let minMacdPrice = low, maxMacdPrice = high;
+    for (let price = low; price <= high + 1e-9; price = Math.round((price + step) * 100) / 100) {
+      const r = predictMACD(history, price, fast, slow, signal);
+      const macd = r.tomorrow.macd;
+      // 变化速率 = 预测日MACD - 今日MACD
+      const rate = macd - todayMacdHist;
+      rows.push({ price, ...r.tomorrow, rate });
+      if (macd < minMacd) { minMacd = macd; minMacdPrice = price; }
+      if (macd > maxMacd) { maxMacd = macd; maxMacdPrice = price; }
+    }
+
+    // 用价格中点作为预测日代表值（用于绘制MACD柱/DIF/DEA）
+    const midPrice = (low + high) / 2;
+    const midResult = predictMACD(history, midPrice, fast, slow, signal);
+
+    // 历史MACD走势 + 预测日（中点价格）
+    const showDays = Math.min(30, history.length);
+    const histStart = history.length - showDays;
+    const fullCloses = history.concat([midPrice]);
+    const fullMacd = calcMACD(fullCloses, fast, slow, signal);
+    const difAll = fullMacd.dif.slice(-showDays - 1);
+    const deaAll = fullMacd.dea.slice(-showDays - 1);
+    const macdAll = fullMacd.macd.slice(-showDays - 1);
+
+    // 日期标签
+    const histDates = window.__historyDates || [];
+    let labels;
+    if (histDates.length >= history.length) {
+      labels = histDates.slice(histStart).concat([ctx.predictLabel]);
+    } else {
+      labels = Array.from({ length: showDays }, (_, i) => `T-${showDays - i}`).concat([ctx.predictLabel]);
+    }
+
+    // K线数据（含预测日，用中点价格）
+    const allOhlc = window.__historyOhlc || [];
+    let klineData = allOhlc.length >= history.length ? allOhlc.slice(histStart) : [];
+    if (klineData.length > 0) {
+      const lastK = klineData[klineData.length - 1];
+      klineData.push({
+        date: ctx.predictDate,
+        open: lastK.close,
+        close: midPrice,
+        high: Math.max(lastK.close, midPrice),
+        low: Math.min(lastK.close, midPrice),
+        isPredict: true
+      });
+    }
+
+    // rangeBox 配置：在预测日柱上绘制价格区间对应的MACD范围
+    const rangeBox = {
+      barIndex: labels.length - 1,
+      minValue: minMacd,
+      maxValue: maxMacd,
+      minPrice: minMacdPrice,
+      maxPrice: maxMacdPrice
+    };
+
+    let rowsHtml = rows.map(r => `
+      <tr>
+        <td>${fmt(r.price, 2)}</td>
+        <td class="${colorClass(r.dif)}">${fmt(r.dif)}</td>
+        <td class="${colorClass(r.dea)}">${fmt(r.dea)}</td>
+        <td class="${colorClass(r.macd)}">${fmt(r.macd)}</td>
+        <td class="${colorClass(r.rate)}">${r.rate >= 0 ? '+' : ''}${fmt(r.rate)}</td>
+      </tr>
+    `).join('');
+
+    const predictLabel = ctx.predictLabel.replace('(预测)', '');
+
+    document.getElementById('resultArea').innerHTML = `
+      <div class="panel">
+        <h2>价格区间扫描结果</h2>
+        <div class="hint">参数: (${fast}, ${slow}, ${signal}) | 预测日: ${ctx.predictDate} | 价格区间: ${fmt(low, 2)} ~ ${fmt(high, 2)} | MACD范围: ${fmt(minMacd)} ~ ${fmt(maxMacd)}</div>
+        <div class="result-grid">
+          <div class="result-card">
+            <h3>区间最低MACD（对应价格 ${fmt(minMacdPrice, 2)}）</h3>
+            <div class="metric"><span class="label">MACD柱</span><span class="value ${colorClass(minMacd)}">${fmt(minMacd)}</span></div>
+          </div>
+          <div class="result-card tomorrow">
+            <h3>区间最高MACD（对应价格 ${fmt(maxMacdPrice, 2)}）</h3>
+            <div class="metric"><span class="label">MACD柱</span><span class="value ${colorClass(maxMacd)}">${fmt(maxMacd)}</span></div>
+          </div>
+        </div>
+        ${klineData.length > 0 ? buildKlineHtml('klineChartRange', `K线图（最近${showDays}个交易日 + ${ctx.predictDate}预测）`, '预测K线(中点价)') : ''}
+        ${buildChartHtml('macdChartRange', `MACD走势图（黑色虚线框 = 价格区间对应MACD范围）`, '中点价预测柱')}
+        <table>
+          <thead>
+            <tr><th>${predictLabel}价格</th><th>DIF</th><th>DEA</th><th>MACD柱</th><th>变化速率</th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+
+    if (klineData.length > 0) {
+      drawCandlestick('klineChartRange', klineData, labels, null, null, 'klineRange');
+    }
+    renderMacdChart('macdChartRange', labels, difAll, deaAll, macdAll, '中点价预测点', 'range', true, rangeBox);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+// ============ 辅助操作 ============
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+  clearError();
+}
+
+function resetParams() {
+  document.getElementById('fastPeriod').value = 12;
+  document.getElementById('slowPeriod').value = 26;
+  document.getElementById('signalPeriod').value = 9;
+}
+
+function setShortParams() {
+  document.getElementById('fastPeriod').value = 6;
+  document.getElementById('slowPeriod').value = 12;
+  document.getElementById('signalPeriod').value = 5;
+}
+
+function setAStockParams() {
+  // A股短线常用参数：3/8/3，对短期波动更敏感
+  document.getElementById('fastPeriod').value = 3;
+  document.getElementById('slowPeriod').value = 8;
+  document.getElementById('signalPeriod').value = 3;
+}
+
+function setALongParams() {
+  // A股长线参数：10/20/7，过滤短期噪声，捕捉中长期趋势
+  document.getElementById('fastPeriod').value = 10;
+  document.getElementById('slowPeriod').value = 20;
+  document.getElementById('signalPeriod').value = 7;
+}
+
+// 股票输入框回车触发拉取
+document.getElementById('stockInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); fetchStock(); }
+});
+
+// ============ 页面初始化 ============
+(function initRangeUI() {
+  // 时间段模式默认值：起始=半年前，结束=今天
+  const today = new Date();
+  const halfYearAgo = new Date();
+  halfYearAgo.setDate(halfYearAgo.getDate() - 180);
+  document.getElementById('begDate').value = fmtDate(halfYearAgo);
+  document.getElementById('endDate').value = fmtDate(today);
+  // 初始化按钮文案和提示
+  updateRangeUI();
+})();
+</script>
+</body>
+</html>
