@@ -171,13 +171,13 @@ class QuantHandler(SimpleHTTPRequestHandler):
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        keys = ["akshare", "eastmoney", "tencent", "sina", "tushare"]
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        keys = ["akshare", "eastmoney", "tencent", "sina", "tushare", "baostock", "tdx"]
+        with ThreadPoolExecutor(max_workers=7) as pool:
             probes = dict(zip(keys, pool.map(self._probe_source, keys)))
 
         base = {
             "auto": {"key": "auto", "name": "自动选择", "type": "K线+资金流",
-                     "desc": "akshare(东财)优先，失败自动回退腾讯行情", "status": "ok", "latency_ms": 0, "detail": ""},
+                     "desc": "akshare(东财)优先，失败自动回退东财直连→证券宝→腾讯", "status": "ok", "latency_ms": 0, "detail": ""},
             "akshare": {"key": "akshare", "name": "akshare", "type": "K线+资金流",
                         "desc": "akshare库抓取A股行情（数据源东财）", **probes["akshare"]},
             "eastmoney": {"key": "eastmoney", "name": "东方财富", "type": "K线",
@@ -188,8 +188,16 @@ class QuantHandler(SimpleHTTPRequestHandler):
                      "desc": "资金流补充（需先有K线）", **probes["sina"]},
             "tushare": {"key": "tushare", "name": "tushare", "type": "K线",
                         "desc": "专业数据源（需token）", **probes["tushare"]},
+            "baostock": {"key": "baostock", "name": "证券宝", "type": "K线",
+                         "desc": "免费稳定独立源（含换手率，无资金流）", **probes["baostock"]},
+            "tdx": {"key": "tdx", "name": "通达信", "type": "分钟K线",
+                    "desc": "分钟级K线（pytdx，供分钟MACD）", **probes["tdx"]},
         }
-        self._send_json({"data": [base[k] for k in ["auto", "akshare", "eastmoney", "tencent", "sina", "tushare"]]}, 200)
+        self._send_json(
+            {"data": [base[k] for k in ["auto", "akshare", "eastmoney", "tencent",
+                                        "sina", "tushare", "baostock", "tdx"]]},
+            200,
+        )
 
     def _probe_source(self, key: str) -> dict:
         """探测单个数据源连通性（akshare 内部无超时控制，单独用线程做超时保护）"""
@@ -230,10 +238,11 @@ class QuantHandler(SimpleHTTPRequestHandler):
         return result
 
     def _probe_fast(self, key: str) -> dict:
-        """探测请求可控超时的数据源（腾讯/新浪/tushare）"""
+        """探测请求可控超时的数据源（腾讯/新浪/tushare/baostock/tdx）"""
         import time
 
         t0 = time.time()
+        detail_hint = ""
         try:
             if key == "akshare":
                 import akshare as ak
@@ -280,13 +289,19 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 ts.set_token(token)
                 df = ts.pro_api().daily(ts_code="600000.SH", start_date="20260801", end_date="20260806")
                 ok = df is not None and not df.empty
+            elif key == "baostock":
+                from data.fetcher import probe_baostock
+                ok, detail_hint = probe_baostock()
+            elif key == "tdx":
+                from data.fetcher import probe_tdx
+                ok, detail_hint = probe_tdx()
             else:
                 return {"status": "fail", "latency_ms": 0, "detail": f"未知数据源 {key}"}
         except Exception as e:
             return {"status": "fail", "latency_ms": int((time.time() - t0) * 1000),
                     "detail": f"{type(e).__name__}: {str(e)[:60]}"}
         return {"status": "ok" if ok else "fail", "latency_ms": int((time.time() - t0) * 1000),
-                "detail": "" if ok else "无数据返回"}
+                "detail": detail_hint or ("" if ok else "无数据返回")}
 
     def api_fetch(self, params: dict):
         """按指定数据源拉取股票数据并入库
@@ -349,6 +364,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 df = fetcher._fetch_via_akshare(code, beg, end)
             elif source == "eastmoney":
                 df = fetcher._fetch_via_eastmoney(code, beg, end)
+            elif source == "baostock":
+                df = fetcher._fetch_via_baostock(code, beg, end)
             elif source == "tencent":
                 df = fetcher._fetch_via_tencent(code, beg, end)
             elif source == "tushare":

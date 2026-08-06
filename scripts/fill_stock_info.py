@@ -147,8 +147,11 @@ def show_stats(cur):
     has_float = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM market_data.stock_info WHERE industry IS NOT NULL")
     has_ind = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM market_data.stock_info WHERE concept IS NOT NULL")
-    has_concept = cur.fetchone()[0]
+    try:
+        cur.execute("SELECT COUNT(DISTINCT symbol) FROM market_data.stock_concept")
+        has_concept = cur.fetchone()[0]
+    except Exception:
+        has_concept = 0
 
     print(f"\n===== 补全结果 =====")
     print(f"总计: {total} 只")

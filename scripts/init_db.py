@@ -16,6 +16,8 @@ from database.db import get_connection, db_cursor
 TABLE_COMMENTS = {
     "market_data.daily_kline": "日K线行情表",
     "market_data.stock_info": "股票基本信息表",
+    "market_data.concept": "概念板块表",
+    "market_data.stock_concept": "股票-概念关联表",
     "backtest.results": "回测结果表",
     "backtest.trades": "回测交易记录表",
     "backtest.nav": "回测每日净值表",
@@ -51,7 +53,6 @@ COLUMN_COMMENTS = {
         "name": "股票名称",
         "market": "市场（sh/sz/bj）",
         "industry": "所属行业",
-        "concept": "概念板块（数组）",
         "list_date": "上市日期",
         "total_share": "总股本（股）",
         "float_share": "流通股本（股）",
@@ -59,6 +60,17 @@ COLUMN_COMMENTS = {
         "float_market_cap": "流通市值（元）",
         "created_at": "记录创建时间",
         "updated_at": "记录更新时间",
+    },
+    "market_data.concept": {
+        "id": "主键",
+        "code": "概念板块代码（东财 BKxxxx）",
+        "name": "概念板块名称（如 抖音概念）",
+        "created_at": "记录创建时间",
+        "updated_at": "记录更新时间",
+    },
+    "market_data.stock_concept": {
+        "symbol": "股票代码",
+        "concept_id": "概念板块ID（关联 market_data.concept.id）",
     },
     "backtest.results": {
         "id": "主键",
@@ -185,7 +197,6 @@ def main():
                 name VARCHAR(20) NOT NULL,
                 market VARCHAR(10),
                 industry VARCHAR(50),
-                concept TEXT[],
                 list_date DATE,
                 total_share NUMERIC(20,2),
                 float_share NUMERIC(20,2),
@@ -195,17 +206,41 @@ def main():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 兼容旧表结构：补充缺失列
-        for col, col_def in [("market", "VARCHAR(10)"), ("concept", "TEXT[]"),
+        # 兼容旧表结构：补充缺失列；概念已拆分到 concept/stock_concept 表，移除旧列
+        for col, col_def in [("market", "VARCHAR(10)"),
                               ("total_share", "NUMERIC(20,2)"), ("float_share", "NUMERIC(20,2)"),
                               ("total_market_cap", "NUMERIC(20,2)"), ("float_market_cap", "NUMERIC(20,2)")]:
             try:
                 cur.execute(f"ALTER TABLE market_data.stock_info ADD COLUMN IF NOT EXISTS {col} {col_def}")
             except Exception:
                 pass
+        cur.execute("ALTER TABLE market_data.stock_info DROP COLUMN IF EXISTS concept")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_info_market ON market_data.stock_info(market)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_info_industry ON market_data.stock_info(industry)")
         print("表 market_data.stock_info 就绪")
+
+        # market_data.concept - 概念板块表
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_data.concept (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(20) UNIQUE NOT NULL,
+                name VARCHAR(100) UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("表 market_data.concept 就绪")
+
+        # market_data.stock_concept - 股票-概念关联表
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_data.stock_concept (
+                symbol VARCHAR(10) NOT NULL,
+                concept_id INTEGER NOT NULL REFERENCES market_data.concept(id) ON DELETE CASCADE,
+                PRIMARY KEY (symbol, concept_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_concept_concept ON market_data.stock_concept(concept_id)")
+        print("表 market_data.stock_concept 就绪")
 
         # backtest.results - 回测结果表
         cur.execute("""

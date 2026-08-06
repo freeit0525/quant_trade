@@ -168,6 +168,8 @@ const SOURCE_META = {
   tencent:   { name: '腾讯行情', type: 'K线' },
   sina:      { name: '新浪财经', type: '资金流' },
   tushare:   { name: 'tushare', type: 'K线' },
+  baostock:  { name: '证券宝', type: 'K线' },
+  tdx:       { name: '通达信', type: '分钟K线' },
 };
 
 let selectedSource = 'auto';
@@ -234,7 +236,7 @@ async function loadSources() {
     if (data.error) throw new Error(data.error);
     renderSourceCards(data.data || []);
     document.getElementById('sourceLegend').textContent =
-      '提示：akshare=akshare库抓取的A股行情（数据源为东方财富）；东方财富=直连东财K线接口；自动选择优先akshare、失败回退腾讯。新浪仅补充资金流，需先有K线；tushare 需配置 token。';
+      '提示：akshare=akshare库抓取的A股行情（数据源为东方财富）；东方财富=直连东财K线接口；证券宝=独立免费源（无资金流）。自动选择按 akshare→东财→证券宝→腾讯 顺序回退。新浪仅补充资金流，需先有K线；tushare 需配置 token；通达信用于分钟级K线（分钟MACD）。';
   } catch (e) {
     showError('检测接口可用性失败: ' + e.message);
   } finally {
@@ -270,6 +272,7 @@ function renderSourceCards(sources, mode) {
 
 function selectSource(key, enabled) {
   if (!enabled) { showError(`${SOURCE_META[key] ? SOURCE_META[key].name : key} 当前不可用，请选择其他接口`); return; }
+  if (key === 'tdx') { showError('通达信接口用于分钟级K线（分钟MACD功能开发中），日线拉取请选择其他数据源'); return; }
   selectedSource = key;
   document.querySelectorAll('.source-card').forEach(c => c.classList.toggle('selected', c.dataset.key === key));
   const btn = document.getElementById('fetchBtn');

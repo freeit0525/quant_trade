@@ -12,6 +12,9 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 东财接口候选主机：被风控时不同主机间歇放行，逐主/机轮询提高成功率
+_EM_API_HOSTS = ("push2.eastmoney.com", "82.push2.eastmoney.com", "push2his.eastmoney.com")
+
 # 东方财富接口请求头：模拟完整浏览器指纹，降低被服务端风控按 UA 拒绝的概率
 _EM_HEADERS = {
     "User-Agent": (
@@ -56,6 +59,114 @@ def _em_get_with_retry(
                 time.sleep(retry_interval * attempt)  # 退避 1s, 2s, ...
     assert last_exc is not None
     raise last_exc
+
+
+# ---------- 证券宝(baostock) ----------
+_bs_logged_in = False  # 进程内登录一次，避免每次拉取重复连接
+
+_BS_KLINE_FIELDS = (
+    "date,code,open,high,low,close,preclose,volume,amount,turn,tradestatus,pctChg,isST"
+)
+
+
+def _baostock_ensure_login() -> bool:
+    """登录证券宝（进程内仅登录一次），成功返回 True"""
+    global _bs_logged_in
+    if _bs_logged_in:
+        return True
+    try:
+        import baostock as bs
+
+        lg = bs.login()
+    except Exception as e:
+        logger.warning(f"baostock 登录异常: {e}")
+        return False
+    if lg.error_code == "0":
+        _bs_logged_in = True
+        return True
+    logger.warning(f"baostock 登录失败: {lg.error_msg}")
+    return False
+
+
+def probe_baostock(limit: float = 8.0) -> tuple[bool, str]:
+    """探测证券宝连通性（baostock 内部连接无超时控制，用线程做超时兜底）"""
+    import threading
+    import time
+
+    result: dict = {}
+
+    def worker():
+        if not _baostock_ensure_login():
+            result["ok"] = False
+            result["detail"] = "登录失败"
+            return
+        try:
+            import baostock as bs
+
+            rs = bs.query_history_k_data_plus(
+                "sh.600000", "date,close",
+                start_date="2026-08-01", end_date="2026-08-06",
+                frequency="d", adjustflag="2",
+            )
+            ok = rs.error_code == "0" and rs.next()
+            result["ok"] = bool(ok)
+            result["detail"] = "" if ok else rs.error_msg
+        except Exception as e:
+            result["ok"] = False
+            result["detail"] = f"{type(e).__name__}: {str(e)[:60]}"
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(limit)
+    if t.is_alive():
+        return False, "连接超时（>8秒）"
+    return bool(result.get("ok")), str(result.get("detail", ""))
+
+
+# ---------- 通达信(pytdx) ----------
+# 实测可用的通达信行情服务器优先，再回退 pytdx 官方服务器列表
+_TDX_PREFERRED_HOSTS = [
+    ("180.153.18.170", 7709),
+    ("123.125.108.14", 7709),
+    ("218.6.170.47", 7709),
+    ("115.238.56.198", 7709),
+    ("180.153.39.51", 7709),
+    ("122.51.120.58", 7709),
+]
+
+# pytdx get_security_bars 的 category: 1/5/15/30/60 分钟
+_TDX_PERIOD_MAP = {"1": 7, "5": 0, "15": 1, "30": 2, "60": 3}
+
+
+def _tdx_hosts() -> list[tuple[str, int]]:
+    """生成通达信服务器候选列表（去重）：首选服务器 + 官方列表"""
+    from pytdx.config.hosts import hq_hosts
+
+    candidates = list(_TDX_PREFERRED_HOSTS)
+    for h in hq_hosts:
+        try:
+            candidates.append((h[1], int(h[2])))
+        except (IndexError, ValueError):
+            candidates.append((h[0], int(h[1])))
+    seen: set[tuple[str, int]] = set()
+    return [x for x in candidates if not (x in seen or seen.add(x))]
+
+
+def probe_tdx() -> tuple[bool, str]:
+    """探测通达信连通性：依次连接候选服务器，取到任意K线即成功"""
+    from pytdx.hq import TdxHq_API
+
+    for host, port in _tdx_hosts():
+        try:
+            api = TdxHq_API()
+            if api.connect(host, port, time_out=4):
+                bars = api.get_security_bars(4, 1, "600000", 0, 1)  # 日线
+                api.disconnect()
+                if bars:
+                    return True, f"{host}:{port}"
+        except Exception:
+            continue
+    return False, "无可用服务器"
 
 
 class DataFetcher:
@@ -233,19 +344,30 @@ class DataFetcher:
         return get_kline(symbol, start_str, end_str)
 
     def _fetch_from_source(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """按配置的数据源拉取数据；东财系(akshare/eastmoney)失败时逐级回退到腾讯"""
+        """按配置的数据源拉取数据；东财系(akshare/eastmoney)失败时逐级回退 baostock → 腾讯"""
         if self.config.source == "akshare":
             df = self._fetch_via_akshare(symbol, start_date, end_date)
             if df.empty:
                 logger.warning(f"akshare获取失败，回退东财直连: {symbol}")
                 df = self._fetch_via_eastmoney(symbol, start_date, end_date)
             if df.empty:
-                logger.warning(f"东财直连获取失败，回退腾讯数据源: {symbol}")
+                logger.warning(f"东财直连获取失败，回退证券宝: {symbol}")
+                df = self._fetch_via_baostock(symbol, start_date, end_date)
+            if df.empty:
+                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
                 df = self._fetch_via_tencent(symbol, start_date, end_date)
         elif self.config.source == "eastmoney":
             df = self._fetch_via_eastmoney(symbol, start_date, end_date)
             if df.empty:
-                logger.warning(f"东财直连获取失败，回退腾讯数据源: {symbol}")
+                logger.warning(f"东财直连获取失败，回退证券宝: {symbol}")
+                df = self._fetch_via_baostock(symbol, start_date, end_date)
+            if df.empty:
+                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
+                df = self._fetch_via_tencent(symbol, start_date, end_date)
+        elif self.config.source == "baostock":
+            df = self._fetch_via_baostock(symbol, start_date, end_date)
+            if df.empty:
+                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
                 df = self._fetch_via_tencent(symbol, start_date, end_date)
         elif self.config.source == "tushare":
             df = self._fetch_via_tushare(symbol, start_date, end_date)
@@ -491,6 +613,107 @@ class DataFetcher:
         except Exception as e:
             logger.error(f"东方财富直连接口获取数据失败: {e}")
             return pd.DataFrame()
+
+    def _fetch_via_baostock(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """通过证券宝(baostock)获取前复权日K线（独立数据源，免费稳定）
+
+        返回列: date/open/close/high/low/volume(股)/amount(元)/amplitude(%)/pct_change(%)/change(元)/turnover(%)
+        """
+        if not _baostock_ensure_login():
+            return pd.DataFrame()
+        import baostock as bs
+
+        bs_code = f"sh.{symbol}" if symbol.startswith(("6", "9")) else f"sz.{symbol}"
+        logger.info(f"通过证券宝获取 {bs_code} 数据...")
+        fmt = lambda s: f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+        try:
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                _BS_KLINE_FIELDS,
+                start_date=fmt(start_date),
+                end_date=fmt(end_date),
+                frequency="d",
+                adjustflag="2",  # 2=前复权
+            )
+            if rs.error_code != "0":
+                logger.warning(f"证券宝查询失败 {bs_code}: {rs.error_msg}")
+                return pd.DataFrame()
+            rows = []
+            while rs.next():
+                rows.append(rs.get_row_data())
+        except Exception as e:
+            logger.error(f"证券宝获取数据失败: {e}")
+            return pd.DataFrame()
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=rs.fields)
+        df["date"] = pd.to_datetime(df["date"])
+        for c in ("open", "high", "low", "close", "preclose", "volume", "amount", "turn", "pctChg"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["change"] = df["close"] - df["preclose"]
+        df["amplitude"] = (df["high"] - df["low"]) / df["preclose"] * 100
+        df = df.rename(columns={"pctChg": "pct_change", "turn": "turnover"})
+        keep = ["date", "open", "close", "high", "low", "volume", "amount",
+                "amplitude", "pct_change", "change", "turnover"]
+        return df[[c for c in keep if c in df.columns]].sort_values("date").reset_index(drop=True)
+
+    def _tdx_connect(self):
+        """连接通达信行情服务器（pytdx），返回已连接的 API 实例，失败返回 None"""
+        from pytdx.hq import TdxHq_API
+
+        for host, port in _tdx_hosts():
+            try:
+                api = TdxHq_API()
+                if api.connect(host, port, time_out=5):
+                    if api.get_security_bars(4, 1, "600000", 0, 1):  # 用日线验证连通
+                        logger.info(f"通达信行情服务器: {host}:{port}")
+                        return api
+                    api.disconnect()
+            except Exception:
+                continue
+        logger.error("通达信行情服务器连接失败")
+        return None
+
+    def fetch_minute_bars(self, symbol: str, period: str = "5", count: int = 240) -> pd.DataFrame:
+        """通过通达信(pytdx)获取分钟K线，供分钟级MACD等使用
+
+        Args:
+            symbol: 股票代码
+            period: 1/5/15/30/60（分钟）
+            count: 返回K线根数（单次最多约800根）
+
+        Returns:
+            DataFrame: datetime/open/close/high/low/volume(股)/amount(元)
+        """
+        category = _TDX_PERIOD_MAP.get(str(period))
+        if category is None:
+            logger.error(f"不支持的分钟周期: {period}")
+            return pd.DataFrame()
+        api = self._tdx_connect()
+        if api is None:
+            return pd.DataFrame()
+        try:
+            market = 1 if symbol.startswith(("6", "9")) else 0
+            bars = api.get_security_bars(category, market, symbol, 0, count)
+            if not bars:
+                logger.warning(f"通达信无 {symbol} {period}分钟K线")
+                return pd.DataFrame()
+            df = pd.DataFrame(bars)
+            # 通达信空数据以极小值填充，过滤无意义的行
+            df = df[df["vol"] >= 1]
+            if df.empty:
+                return pd.DataFrame()
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.rename(columns={"vol": "volume"})
+            df = df.sort_values("datetime").reset_index(drop=True)
+            keep = ["datetime", "open", "close", "high", "low", "volume", "amount"]
+            return df[[c for c in keep if c in df.columns]]
+        finally:
+            try:
+                api.disconnect()
+            except Exception:
+                pass
 
     def _fetch_via_tencent(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """通过腾讯行情接口获取前复权日线数据（备用数据源）
