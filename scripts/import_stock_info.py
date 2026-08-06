@@ -194,12 +194,15 @@ def import_detail_individually(cur, symbols: list[str], max_retry: int = 2):
     print(f"详细信息获取完成：成功 {success}，失败 {failed}")
 
 
-def import_concepts(cur):
+def import_concepts(cur, retry_rounds=5, retry_wait=60):
     """获取东方财富概念板块及成分股，写入 concept 表和 stock_concept 关联表（全量重写）
 
     - 概念列表：东财 clist 接口分页拉取（每页上限100）
     - 成分股：逐个概念拉取，断点续传（scripts/.concept_cache.json），中断后重跑自动跳过
-    - 写库：concept 表 upsert；stock_concept 表清空后全量重写，仅关联已入库的股票
+    - 自动续跑：东财风控导致连续失败中断本轮后，自动等待 retry_wait 秒再重试剩余概念，
+      最多跑 retry_rounds 轮（retry_rounds=0 表示跑完一轮即结束）
+    - 写库：每轮结束将已拉取进度写入库（concept 表 upsert；stock_concept 表清空后全量重写，
+      仅关联已入库的股票）
     """
     import json
     from data.fetcher import _EM_API_HOSTS, _em_get_with_retry
@@ -223,94 +226,121 @@ def import_concepts(cur):
                 continue
         return []
 
-    # 1) 分页拉取概念列表：code -> name
-    concepts: dict[str, str] = {}
-    for pn in range(1, 100):
-        data = _clist_get({
-            "pn": str(pn), "pz": "100", "po": "1", "np": "1", "fltt": "2",
-            "invt": "2", "fid": "f12", "fs": "m:90+t:3", "fields": "f12,f14",
-        })
-        if not data:
-            print(f"概念列表第 {pn} 页获取失败，停止分页（已获 {len(concepts)} 个）")
-            break
-        for d in data:
-            concepts[d["f12"]] = d["f14"]
-        if len(data) < 100:
-            break
-        time.sleep(0.3)
-    if not concepts:
-        print("未获取到任何概念板块，请检查东财接口连通性")
-        return
-    print(f"共获取 {len(concepts)} 个概念板块")
+    def _write_concept_data(concepts_map, symbol_concepts):
+        """将已拉取进度写入库：concept 表 upsert，stock_concept 表全量重写"""
+        concept_rows = [(code, name) for code, name in concepts_map.items()]
+        execute_values(
+            cur,
+            """INSERT INTO market_data.concept (code, name) VALUES %s
+               ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = CURRENT_TIMESTAMP""",
+            concept_rows,
+            page_size=1000,
+        )
+        cur.execute("SELECT id, code FROM market_data.concept")
+        concept_id = {code: cid for cid, code in cur.fetchall()}
 
-    # 2) 逐个概念拉取成分股（带断点续传）
-    concept_map: dict[str, list[str]] = {}  # symbol -> [concept_code, ...]
-    total = len(concepts)
-    consecutive_fail = 0
-    for i, (bk, name) in enumerate(concepts.items(), 1):
-        if bk in cache and cache[bk]:
-            codes = cache[bk]
-            consecutive_fail = 0
-        else:
-            data = _clist_get({
-                "pn": "1", "pz": "5000", "po": "1", "np": "1", "fltt": "2",
-                "invt": "2", "fid": "f12", "fs": f"b:{bk}", "fields": "f12",
-            })
-            codes = [d["f12"] for d in data]
-            if not codes:
-                consecutive_fail += 1
-                if consecutive_fail >= 5:
-                    # 连续多次失败说明东财风控/网络不可用，提前中断，保留断点缓存下次续跑
-                    cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-                    print("连续多次获取失败（东财风控或网络不可用），提前中断；断点缓存已保存，稍后重跑即可续传")
+        # 仅关联已存在于 stock_info 的股票，避免脏数据
+        cur.execute("SELECT symbol FROM market_data.stock_info")
+        valid_symbols = {r[0] for r in cur.fetchall()}
+
+        stock_rows = []
+        for symbol, bks in symbol_concepts.items():
+            if symbol not in valid_symbols:
+                continue
+            for bk in bks:
+                stock_rows.append((symbol, concept_id[bk]))
+
+        cur.execute("DELETE FROM market_data.stock_concept")
+        execute_values(
+            cur,
+            "INSERT INTO market_data.stock_concept (symbol, concept_id) VALUES %s",
+            stock_rows,
+            page_size=2000,
+        )
+        print(f"概念写入完成：概念表 {len(concept_rows)} 条，关联表 {len(stock_rows)} 条")
+
+    # 2) 逐轮拉取：概念列表（若未获取）+ 成分股（断点续传 + 自动续跑）
+    concepts: dict[str, str] = {}
+    concept_map: dict[str, set[str]] = {}  # symbol -> set[concept_code]（set 防跨轮重复拉取导致的重复关联）
+    round_no = 0
+    while True:
+        # 判断本轮待完成工作：概念列表未获取，或有概念未拉取成分
+        list_pending = not concepts
+        pending = sum(1 for bk in concepts if bk not in cache or not cache[bk])
+        if not list_pending and pending == 0:
+            print(f"全部 {len(concepts)} 个概念成分拉取完成")
+            break
+        round_no += 1
+        if round_no > 1:
+            if round_no > retry_rounds:
+                print(
+                    f"已达到最大续跑轮数（{retry_rounds}），"
+                    f"仍有{('概念列表未获取' if list_pending else f'{pending} 个概念成分未拉取')}，"
+                    f"稍后重跑本命令即可续传"
+                )
+                break
+            print(
+                f"\n===== 第 {round_no} 轮：等待 {retry_wait} 秒后重试 =====",
+                flush=True,
+            )
+            time.sleep(retry_wait)
+
+        # 2a) 概念列表未获取则分页拉取：code -> name
+        if list_pending:
+            for pn in range(1, 100):
+                data = _clist_get({
+                    "pn": str(pn), "pz": "100", "po": "1", "np": "1", "fltt": "2",
+                    "invt": "2", "fid": "f12", "fs": "m:90+t:3", "fields": "f12,f14",
+                })
+                if not data:
+                    print(f"概念列表第 {pn} 页获取失败，停止分页（已获 {len(concepts)} 个）")
                     break
-            else:
+                for d in data:
+                    concepts[d["f12"]] = d["f14"]
+                if len(data) < 100:
+                    break
+                time.sleep(0.3)
+            if not concepts:
+                print("本轮未获取到概念列表（东财接口不可用），进入下轮重试")
+                continue
+            print(f"共获取 {len(concepts)} 个概念板块")
+
+        # 2b) 逐个拉取剩余概念成分股（断点续传）
+        consecutive_fail = 0
+        for i, (bk, name) in enumerate(concepts.items(), 1):
+            if bk in cache and cache[bk]:
+                codes = cache[bk]
                 consecutive_fail = 0
-            cache[bk] = codes
-            if i % 20 == 0:  # 每 20 个概念持久化一次断点缓存
-                cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-            time.sleep(0.3)
-        for code in codes:
-            concept_map.setdefault(code, []).append(bk)
-        if i % 100 == 0:
-            print(f"  进度: {i}/{total}（涉及 {len(concept_map)} 只股票）", flush=True)
-    cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            else:
+                data = _clist_get({
+                    "pn": "1", "pz": "5000", "po": "1", "np": "1", "fltt": "2",
+                    "invt": "2", "fid": "f12", "fs": f"b:{bk}", "fields": "f12",
+                })
+                codes = [d["f12"] for d in data]
+                if not codes:
+                    consecutive_fail += 1
+                    if consecutive_fail >= 5:
+                        # 连续多次失败说明东财风控/网络不可用，中断本轮，保留断点缓存
+                        cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+                        print("连续多次获取失败（东财风控或网络不可用），中断本轮；断点缓存已保存")
+                        break
+                else:
+                    consecutive_fail = 0
+                cache[bk] = codes
+                if i % 20 == 0:  # 每 20 个概念持久化一次断点缓存
+                    cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+                time.sleep(0.3)
+            for code in codes:
+                concept_map.setdefault(code, set()).add(bk)
+        cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+
+        # 本轮结束：有进度则写库，保留已拉取部分
+        if concept_map:
+            _write_concept_data(concepts, concept_map)
+
     if not concept_map:
         print("未拉取到任何概念成分数据（东财接口当前不可用）")
         return
-    print(f"成分拉取完成：{len(concept_map)} 只股票涉及概念")
-
-    # 3) 写库：concept 表 upsert，stock_concept 表全量重写
-    concept_rows = [(code, name) for code, name in concepts.items()]
-    execute_values(
-        cur,
-        """INSERT INTO market_data.concept (code, name) VALUES %s
-           ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = CURRENT_TIMESTAMP""",
-        concept_rows,
-        page_size=1000,
-    )
-    cur.execute("SELECT id, code FROM market_data.concept")
-    concept_id = {code: cid for cid, code in cur.fetchall()}
-
-    # 仅关联已存在于 stock_info 的股票，避免脏数据
-    cur.execute("SELECT symbol FROM market_data.stock_info")
-    valid_symbols = {r[0] for r in cur.fetchall()}
-
-    stock_rows = []
-    for symbol, bks in concept_map.items():
-        if symbol not in valid_symbols:
-            continue
-        for bk in bks:
-            stock_rows.append((symbol, concept_id[bk]))
-
-    cur.execute("DELETE FROM market_data.stock_concept")
-    execute_values(
-        cur,
-        "INSERT INTO market_data.stock_concept (symbol, concept_id) VALUES %s",
-        stock_rows,
-        page_size=2000,
-    )
-    print(f"概念写入完成：概念表 {len(concept_rows)} 条，关联表 {len(stock_rows)} 条")
 
 
 def show_stats(cur):
@@ -335,6 +365,10 @@ def main():
     parser.add_argument("--detail", action="store_true", help="批量获取详细信息（行业/市值，快速）")
     parser.add_argument("--detail-individual", action="store_true", help="逐个获取详细信息（含上市日期/总股本，慢）")
     parser.add_argument("--concept", action="store_true", help="额外获取概念板块")
+    parser.add_argument("--concept-retry", type=int, default=5,
+                        help="概念导入自动续跑最大轮数（0=不续跑，默认5轮）")
+    parser.add_argument("--concept-wait", type=int, default=60,
+                        help="概念导入续跑轮间等待秒数（默认60）")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -353,7 +387,7 @@ def main():
 
         if args.concept:
             print("\n开始获取概念板块...")
-            import_concepts(cur)
+            import_concepts(cur, retry_rounds=args.concept_retry, retry_wait=args.concept_wait)
 
         show_stats(cur)
     finally:
