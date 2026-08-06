@@ -331,3 +331,141 @@ def get_nav_by_result_id(result_id: int, config: DatabaseConfig | None = None) -
     df = pd.DataFrame(rows, columns=columns)
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+# ============================================================
+# 日K线 CRUD
+# ============================================================
+
+def get_kline_max_date(symbol: str, config: DatabaseConfig | None = None) -> Optional[str]:
+    """查询某只股票在 daily_kline 表中已存在的最大交易日期
+
+    Returns:
+        'YYYY-MM-DD' 字符串；表中无该 symbol 数据时返回 None
+    """
+    with db_cursor(config) as cur:
+        cur.execute(
+            "SELECT MAX(trade_date) FROM market_data.daily_kline WHERE symbol = %s",
+            (symbol,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return row[0].strftime("%Y-%m-%d")
+
+
+def get_kline(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    config: DatabaseConfig | None = None,
+) -> pd.DataFrame:
+    """从数据库读取日K线数据，日期范围 [start_date, end_date]（含两端）
+
+    Args:
+        symbol: 股票代码
+        start_date: 开始日期，'YYYY-MM-DD' 或 'YYYYMMDD'
+        end_date: 结束日期，'YYYY-MM-DD' 或 'YYYYMMDD'
+
+    Returns:
+        包含 date/open/high/low/close/volume/amount/turnover 的 DataFrame，按日期升序
+    """
+    start_str = pd.to_datetime(start_date).strftime("%Y-%m-%d")
+    end_str = pd.to_datetime(end_date).strftime("%Y-%m-%d")
+    with db_cursor(config) as cur:
+        cur.execute(
+            """SELECT trade_date AS date, open, high, low, close, volume, amount, turnover,
+                      pct_change, change, amplitude, volume_ratio,
+                      main_net_inflow, super_large_net_inflow, large_net_inflow,
+                      medium_net_inflow, small_net_inflow
+               FROM market_data.daily_kline
+               WHERE symbol = %s AND trade_date >= %s AND trade_date <= %s
+               ORDER BY trade_date""",
+            (symbol, start_str, end_str),
+        )
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=columns)
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = None) -> int:
+    """批量写入日K线数据，已存在的 (symbol, trade_date) 会被更新（upsert）
+
+    Args:
+        df: 含 date/open/high/low/close/volume/amount/turnover 列的 DataFrame
+        symbol: 股票代码
+
+    Returns:
+        写入的记录数
+    """
+    if df.empty:
+        return 0
+
+    def _val(row, key, cast=float):
+        v = row.get(key)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        try:
+            return cast(v)
+        except (ValueError, TypeError):
+            return None
+
+    rows = []
+    for _, row in df.iterrows():
+        d = row["date"]
+        date_str = d.strftime("%Y-%m-%d") if not isinstance(d, str) else d
+        rows.append((
+            symbol,
+            date_str,
+            _val(row, "open"),
+            _val(row, "high"),
+            _val(row, "low"),
+            _val(row, "close"),
+            _val(row, "volume", cast=int),
+            _val(row, "amount"),
+            _val(row, "turnover"),
+            _val(row, "pct_change"),
+            _val(row, "change"),
+            _val(row, "amplitude"),
+            _val(row, "volume_ratio"),
+            _val(row, "main_net_inflow"),
+            _val(row, "super_large_net_inflow"),
+            _val(row, "large_net_inflow"),
+            _val(row, "medium_net_inflow"),
+            _val(row, "small_net_inflow"),
+        ))
+
+    with db_cursor(config) as cur:
+        execute_values(
+            cur,
+            """INSERT INTO market_data.daily_kline
+               (symbol, trade_date, open, high, low, close, volume, amount, turnover,
+                pct_change, change, amplitude, volume_ratio,
+                main_net_inflow, super_large_net_inflow, large_net_inflow,
+                medium_net_inflow, small_net_inflow)
+               VALUES %s
+               ON CONFLICT (symbol, trade_date) DO UPDATE SET
+                   open = EXCLUDED.open,
+                   high = EXCLUDED.high,
+                   low = EXCLUDED.low,
+                   close = EXCLUDED.close,
+                   volume = EXCLUDED.volume,
+                   amount = EXCLUDED.amount,
+                   turnover = EXCLUDED.turnover,
+                   pct_change = EXCLUDED.pct_change,
+                   change = EXCLUDED.change,
+                   amplitude = EXCLUDED.amplitude,
+                   volume_ratio = EXCLUDED.volume_ratio,
+                   main_net_inflow = EXCLUDED.main_net_inflow,
+                   super_large_net_inflow = EXCLUDED.super_large_net_inflow,
+                   large_net_inflow = EXCLUDED.large_net_inflow,
+                   medium_net_inflow = EXCLUDED.medium_net_inflow,
+                   small_net_inflow = EXCLUDED.small_net_inflow""",
+            rows,
+        )
+    logger.info(f"日K线已入库: {symbol} {len(rows)} 条")
+    return len(rows)

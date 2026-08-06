@@ -33,10 +33,33 @@ def main():
                 volume BIGINT,
                 amount NUMERIC(20,4),
                 turnover NUMERIC(12,4),
+                pct_change NUMERIC(12,4),
+                change NUMERIC(12,4),
+                amplitude NUMERIC(12,4),
+                volume_ratio NUMERIC(12,4),
+                main_net_inflow NUMERIC(20,4),
+                super_large_net_inflow NUMERIC(20,4),
+                large_net_inflow NUMERIC(20,4),
+                medium_net_inflow NUMERIC(20,4),
+                small_net_inflow NUMERIC(20,4),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(symbol, trade_date)
             )
         """)
+        # 兼容旧表结构：补充新增列（涨跌幅/涨跌额/振幅/量比/资金流向）
+        for col, col_def in [("pct_change", "NUMERIC(12,4)"),
+                              ("change", "NUMERIC(12,4)"),
+                              ("amplitude", "NUMERIC(12,4)"),
+                              ("volume_ratio", "NUMERIC(12,4)"),
+                              ("main_net_inflow", "NUMERIC(20,4)"),
+                              ("super_large_net_inflow", "NUMERIC(20,4)"),
+                              ("large_net_inflow", "NUMERIC(20,4)"),
+                              ("medium_net_inflow", "NUMERIC(20,4)"),
+                              ("small_net_inflow", "NUMERIC(20,4)")]:
+            try:
+                cur.execute(f"ALTER TABLE market_data.daily_kline ADD COLUMN IF NOT EXISTS {col} {col_def}")
+            except Exception:
+                pass
         print("表 market_data.daily_kline 创建成功")
 
         # market_data.stock_info - 股票基本信息表
