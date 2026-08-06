@@ -114,16 +114,7 @@ class DataFetcher:
             if wider is not None:
                 return wider
 
-        if self.config.source == "akshare":
-            df = self._fetch_via_akshare(symbol, start_date, end_date)
-            if df.empty:
-                # akshare(东方财富)失败时回退腾讯数据源
-                logger.warning(f"akshare获取失败，回退腾讯数据源: {symbol}")
-                df = self._fetch_via_tencent(symbol, start_date, end_date)
-        elif self.config.source == "tushare":
-            df = self._fetch_via_tushare(symbol, start_date, end_date)
-        else:
-            raise ValueError(f"不支持的数据源: {self.config.source}")
+        df = self._fetch_from_source(symbol, start_date, end_date)
 
         if df.empty:
             logger.warning(f"未获取到数据: {symbol} ({start_date} ~ {end_date})")
@@ -142,63 +133,72 @@ class DataFetcher:
         return df
 
     def _fetch_stock_via_db(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """数据库增量拉取：先查库中已有最大日期，仅拉取缺失部分入库，再从库返回完整范围"""
-        from database.db import get_kline, get_kline_max_date, save_kline
+        """数据库增量拉取：先查库中已有数据范围（最小/最大日期），
+        仅拉取缺失缺口（历史缺口 + 尾部缺口）入库，再从库返回完整范围"""
+        from database.db import get_kline, get_kline_max_date, get_kline_min_date, save_kline
 
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
 
-        # 1. 对比数据库中是否已有数据
+        # 1. 查询库中已有数据范围，确定需要拉取的缺口
         max_date_str = get_kline_max_date(symbol)
+        min_date_str = get_kline_min_date(symbol)
 
-        if max_date_str is not None:
-            max_dt = pd.to_datetime(max_date_str)
-            if max_dt >= end_dt:
-                # 数据库已覆盖请求范围，直接返回库中数据
-                logger.info(f"数据库已有 {symbol} 数据（至 {max_date_str}），覆盖请求范围，直接读取")
-                return get_kline(symbol, start_str, end_str)
-            # 增量拉取 max_date 次日 ~ end_date
-            fetch_start = (max_dt + pd.Timedelta(days=1)).strftime("%Y%m%d")
-            fetch_end = end_dt.strftime("%Y%m%d")
-            logger.info(f"数据库已有 {symbol} 至 {max_date_str}，增量拉取 {fetch_start} ~ {fetch_end}")
+        gaps: list[tuple[str, str]] = []  # (fetch_start, fetch_end)，均为 YYYYMMDD
+        if max_date_str is None:
+            # 库中无数据，全量拉取
+            gaps.append((start_dt.strftime("%Y%m%d"), end_dt.strftime("%Y%m%d")))
+            logger.info(f"数据库无 {symbol} 数据，全量拉取 {start_str} ~ {end_str}")
         else:
-            # 数据库无数据，全量拉取
-            fetch_start = start_dt.strftime("%Y%m%d")
-            fetch_end = end_dt.strftime("%Y%m%d")
-            logger.info(f"数据库无 {symbol} 数据，全量拉取 {fetch_start} ~ {fetch_end}")
+            max_dt = pd.to_datetime(max_date_str)
+            min_dt = pd.to_datetime(min_date_str)
+            # 尾部缺口：库中最大日期 < 请求结束日期
+            if max_dt < end_dt:
+                fetch_start = (max_dt + pd.Timedelta(days=1)).strftime("%Y%m%d")
+                gaps.append((fetch_start, end_dt.strftime("%Y%m%d")))
+                logger.info(f"数据库已有 {symbol} 至 {max_date_str}，增量拉取 {fetch_start} ~ {end_str}")
+            # 头部缺口（历史缺口）：库中最小日期 > 请求开始日期
+            if min_dt > start_dt:
+                fetch_end = (min_dt - pd.Timedelta(days=1)).strftime("%Y%m%d")
+                gaps.append((start_dt.strftime("%Y%m%d"), fetch_end))
+                logger.info(f"数据库已有 {symbol} 自 {min_date_str}，补拉历史缺口 {start_str} ~ {fetch_end}")
 
-        # 2. 拉取缺失部分
-        if self.config.source == "akshare":
-            df = self._fetch_via_akshare(symbol, fetch_start, fetch_end)
+        # 2. 依次拉取各缺口并入库
+        fetched_dfs = []
+        for fetch_start, fetch_end in gaps:
+            df = self._fetch_from_source(symbol, fetch_start, fetch_end)
             if df.empty:
-                # akshare(东方财富)失败时回退腾讯数据源
+                logger.warning(f"未获取到数据: {symbol} ({fetch_start} ~ {fetch_end})")
+                continue
+            df = self._normalize_columns(df)
+            df = df.sort_values("date").reset_index(drop=True)
+            # 计算量比（需库中 fetch_start 之前最近5个交易日的 volume 作为窗口前置）
+            df = self._calc_volume_ratio(df, symbol, fetch_start)
+            # 合并资金流向（近100天可获取，更早为 NULL）
+            df = self._merge_fund_flow(df, symbol)
+            fetched_dfs.append(df)
+
+        if fetched_dfs:
+            combined = pd.concat(fetched_dfs, ignore_index=True)
+            save_kline(combined, symbol)
+
+        # 3. 从数据库返回完整范围
+        return get_kline(symbol, start_str, end_str)
+
+    def _fetch_from_source(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """按配置的数据源拉取数据，akshare(东方财富)失败时回退腾讯数据源"""
+        if self.config.source == "akshare":
+            df = self._fetch_via_akshare(symbol, start_date, end_date)
+            if df.empty:
                 logger.warning(f"akshare获取失败，回退腾讯数据源: {symbol}")
-                df = self._fetch_via_tencent(symbol, fetch_start, fetch_end)
+                df = self._fetch_via_tencent(symbol, start_date, end_date)
         elif self.config.source == "tushare":
-            df = self._fetch_via_tushare(symbol, fetch_start, fetch_end)
+            df = self._fetch_via_tushare(symbol, start_date, end_date)
         else:
             raise ValueError(f"不支持的数据源: {self.config.source}")
-
-        if df.empty:
-            logger.warning(f"未获取到数据: {symbol} ({fetch_start} ~ {fetch_end})")
-            return get_kline(symbol, start_str, end_str)
-
-        df = self._normalize_columns(df)
-        df = df.sort_values("date").reset_index(drop=True)
-
-        # 3. 计算量比（需库中 fetch_start 之前最近5个交易日的 volume 作为窗口前置）
-        df = self._calc_volume_ratio(df, symbol, fetch_start)
-
-        # 4. 合并资金流向（近100天可获取，更早为 NULL）
-        df = self._merge_fund_flow(df, symbol)
-
-        # 5. 入库（upsert，已存在的日期会被更新）
-        save_kline(df, symbol)
-
-        # 6. 从数据库返回完整范围
-        return get_kline(symbol, start_str, end_str)
+        return df
 
     def _calc_volume_ratio(self, df: pd.DataFrame, symbol: str, fetch_start: str) -> pd.DataFrame:
         """计算量比 = 当日成交量 / 过去5个交易日（不含当日）平均成交量

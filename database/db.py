@@ -354,6 +354,23 @@ def get_kline_max_date(symbol: str, config: DatabaseConfig | None = None) -> Opt
     return row[0].strftime("%Y-%m-%d")
 
 
+def get_kline_min_date(symbol: str, config: DatabaseConfig | None = None) -> Optional[str]:
+    """查询某只股票在 daily_kline 表中已存在的最小交易日期
+
+    Returns:
+        'YYYY-MM-DD' 字符串；表中无该 symbol 数据时返回 None
+    """
+    with db_cursor(config) as cur:
+        cur.execute(
+            "SELECT MIN(trade_date) FROM market_data.daily_kline WHERE symbol = %s",
+            (symbol,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return row[0].strftime("%Y-%m-%d")
+
+
 def get_kline(
     symbol: str,
     start_date: str,
