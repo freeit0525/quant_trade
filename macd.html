@@ -283,14 +283,18 @@ function predictMACD(history, tomorrowPrice, fast, slow, signal) {
 }
 
 // ============ 股票数据拉取 ============
+// 数据统一通过本地服务 (server.py) 拉取：走数据库增量入库后返回，
+// 浏览器拉数据的同时自动入库。请先运行: python server.py
+// 若以 file:// 方式直接打开页面，则 API 指向 http://127.0.0.1:8000（需服务已启动）
+const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
+  ? 'http://127.0.0.1:8000' : '';
 async function searchStock(keyword) {
-  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(keyword)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=10`;
+  const url = `${API_BASE}/api/search?keyword=${encodeURIComponent(keyword)}`;
   const res = await fetch(url);
   const data = await res.json();
-  const table = data.QuotationCodeTable || {};
-  const list = table.Data || [];
+  if (data.error) { throw new Error(data.error); }
   // 只保留A股
-  return list.filter(r => r.Classify === 'AStock' && r.Code && r.Code.length === 6);
+  return data.data || [];
 }
 
 // 根据股票代码和名称判断涨跌停限制比例
@@ -483,6 +487,11 @@ async function fetchStock() {
     if (/^\d{6}$/.test(input)) {
       code = input;
       secid = getSecid(code);
+      // 输入纯代码时也查询一次名称，用于展示 "名称 (代码)"
+      try {
+        const stocks = await searchStock(code);
+        if (stocks.length > 0) { name = stocks[0].Name; secid = stocks[0].QuoteID; }
+      } catch (e) { /* 名称查询失败不影响拉取 */ }
     } else {
       const stocks = await searchStock(input);
       if (stocks.length === 0) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
@@ -493,27 +502,25 @@ async function fetchStock() {
     }
 
     const range = buildRangeParams();
-    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&beg=${range.beg}&end=${range.end}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&lmt=${range.lmt}`;
 
+    // 通过本地服务拉取：先查库→增量拉取→入库，再返回完整数据
+    const url = `${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`;
     const res = await fetch(url);
     const data = await res.json();
 
-    if (!data.data || !data.data.klines || data.data.klines.length === 0) {
-      showError('未获取到K线数据，请检查代码是否正确');
+    if (!data.data || data.data.length === 0) {
+      showError(data.error || '未获取到K线数据，请检查代码是否正确');
       infoEl.textContent = '';
       return;
     }
 
-    name = name || data.data.name || code;
-    const klines = data.data.klines;
-    // kline格式: 日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手率
-    let ohlc = klines.map(k => {
-      const p = k.split(',');
-      return {
-        date: p[0], open: +p[1], close: +p[2], high: +p[3], low: +p[4],
-        volume: +p[5], amount: +p[6], amplitude: +p[7], pctChange: +p[8], change: +p[9], turnover: +p[10]
-      };
-    });
+    name = name || data.stock?.name || code;
+    const klines = data.data;
+    // 每条记录: date/open/close/high/low/volume/amount/turnover/pct_change/change/amplitude
+    let ohlc = klines.map(k => ({
+      date: k.date, open: +k.open, close: +k.close, high: +k.high, low: +k.low,
+      volume: +k.volume, amount: +k.amount, amplitude: +k.amplitude, pctChange: +k.pct_change, change: +k.change, turnover: +k.turnover
+    }));
     let closes = ohlc.map(k => k.close);
     let dates = ohlc.map(k => k.date);
 
@@ -559,7 +566,11 @@ async function fetchStock() {
       : `最新收盘: ${lastClose.toFixed(2)} (${lastCompleteDate})`;
     infoEl.innerHTML = `<strong style="color:#1a73e8">${name} (${code})</strong> | ${timeStatus} | 预测日: <strong style="color:#e8453c">${ctx.predictDate}</strong> | 历史 ${closes.length} 条`;
   } catch (e) {
-    showError('拉取失败: ' + e.message + '（如遇CORS限制，可改用Python代理方案）');
+    // Failed to fetch 常见原因：本地服务(server.py)未启动，或端口被占用
+    const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
+      ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
+      : '（如遇CORS限制，可改用Python代理方案）';
+    showError('拉取失败: ' + e.message + hint);
     infoEl.textContent = '';
   }
 }

@@ -116,6 +116,10 @@ class DataFetcher:
 
         if self.config.source == "akshare":
             df = self._fetch_via_akshare(symbol, start_date, end_date)
+            if df.empty:
+                # akshare(东方财富)失败时回退腾讯数据源
+                logger.warning(f"akshare获取失败，回退腾讯数据源: {symbol}")
+                df = self._fetch_via_tencent(symbol, start_date, end_date)
         elif self.config.source == "tushare":
             df = self._fetch_via_tushare(symbol, start_date, end_date)
         else:
@@ -168,6 +172,10 @@ class DataFetcher:
         # 2. 拉取缺失部分
         if self.config.source == "akshare":
             df = self._fetch_via_akshare(symbol, fetch_start, fetch_end)
+            if df.empty:
+                # akshare(东方财富)失败时回退腾讯数据源
+                logger.warning(f"akshare获取失败，回退腾讯数据源: {symbol}")
+                df = self._fetch_via_tencent(symbol, fetch_start, fetch_end)
         elif self.config.source == "tushare":
             df = self._fetch_via_tushare(symbol, fetch_start, fetch_end)
         else:
@@ -292,6 +300,75 @@ class DataFetcher:
             return df
         except Exception as e:
             logger.error(f"akshare获取数据失败: {e}")
+            return pd.DataFrame()
+
+    def _fetch_via_tencent(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """通过腾讯行情接口获取前复权日线数据（备用数据源）
+
+        返回列: date/open/close/high/low/volume(股)/amount(可算)/amplitude/pct_change/change
+        turnover(换手率) 腾讯接口不提供，置为 None。
+        """
+        import requests
+
+        # 腾讯接口代码前缀: 沪市 sh、深市 sz、北交所 bj
+        market = self._infer_market_code(symbol)
+        qq_symbol = f"{market}{symbol}"
+        logger.info(f"通过腾讯行情获取 {qq_symbol} 数据...")
+        try:
+            url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            # 腾讯接口需要 "YYYY-MM-DD" 格式日期
+            fmt = lambda s: f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+            params = {
+                "param": f"{qq_symbol},day,{fmt(start_date)},{fmt(end_date)},640,qfq",
+            }
+            resp = requests.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Referer": "https://gu.qq.com/",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {}).get(qq_symbol, {})
+            klines = data.get("qfqday") or data.get("day")
+            if not klines:
+                logger.warning(f"腾讯行情无 {qq_symbol} 数据")
+                return pd.DataFrame()
+
+            rows = []
+            for k in klines:
+                # 格式: [日期, 开, 收, 高, 低, 成交量(手)]
+                if len(k) < 6:
+                    continue
+                try:
+                    open_p, close_p, high_p, low_p = map(float, k[1:5])
+                    rows.append({
+                        "date": pd.to_datetime(k[0]),
+                        "open": open_p,
+                        "close": close_p,
+                        "high": high_p,
+                        "low": low_p,
+                        "volume": float(k[5]) * 100,  # 手 -> 股
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df = df.sort_values("date").reset_index(drop=True)
+
+            # 计算派生字段
+            df["pct_change"] = df["close"].pct_change() * 100
+            df["change"] = df["close"].diff()
+            df["amplitude"] = (df["high"] - df["low"]) / df["close"].shift(1) * 100
+            df["amount"] = df["volume"] * df["close"]  # 近似成交额(元)
+            df["turnover"] = None
+            return df
+        except Exception as e:
+            logger.error(f"腾讯行情获取数据失败: {e}")
             return pd.DataFrame()
 
     def _fetch_via_tushare(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
