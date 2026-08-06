@@ -6,8 +6,8 @@
 
 启动方式：
     python server.py [--port 8000]
-然后浏览器访问 http://127.0.0.1:8000/backtest.html
-（也支持直接双击打开 backtest.html，此时前端自动指向本服务地址）
+然后浏览器访问 http://127.0.0.1:8000/ （入口页）
+（也支持直接双击打开 index.html，此时前端自动指向本服务地址）
 """
 
 import argparse
@@ -85,6 +85,10 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_kline(params)
             elif parsed.path == "/api/search":
                 self.api_search(params)
+            elif parsed.path == "/api/sources":
+                self.api_sources(params)
+            elif parsed.path == "/api/fetch":
+                self.api_fetch(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -160,6 +164,219 @@ class QuantHandler(SimpleHTTPRequestHandler):
         ]
         self._send_json({"data": stocks}, 200)
 
+    def api_sources(self, params: dict):
+        """探测各数据源连通性（并发请求，用 600000 近5日做轻量探测）
+
+        返回: { data: [{key,name,type,desc,status,latency_ms,detail}, ...] }
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        keys = ["akshare", "tencent", "sina", "tushare"]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            probes = dict(zip(keys, pool.map(self._probe_source, keys)))
+
+        base = {
+            "auto": {"key": "auto", "name": "自动选择", "type": "K线+资金流",
+                     "desc": "东方财富优先，失败自动回退腾讯行情", "status": "ok", "latency_ms": 0, "detail": ""},
+            "akshare": {"key": "akshare", "name": "东方财富", "type": "K线+资金流",
+                        "desc": "akshare 主数据源", **probes["akshare"]},
+            "tencent": {"key": "tencent", "name": "腾讯行情", "type": "K线",
+                        "desc": "备用K线源（无资金流）", **probes["tencent"]},
+            "sina": {"key": "sina", "name": "新浪财经", "type": "资金流",
+                     "desc": "资金流补充（需先有K线）", **probes["sina"]},
+            "tushare": {"key": "tushare", "name": "tushare", "type": "K线",
+                        "desc": "专业数据源（需token）", **probes["tushare"]},
+        }
+        self._send_json({"data": [base[k] for k in ["auto", "akshare", "tencent", "sina", "tushare"]]}, 200)
+
+    def _probe_source(self, key: str) -> dict:
+        """探测单个数据源连通性（akshare 内部无超时控制，单独用线程做超时保护）"""
+        if key == "akshare":
+            return self._probe_akshare_limited()
+        return self._probe_fast(key)
+
+    def _probe_akshare_limited(self) -> dict:
+        """akshare(东方财富)探测：东财域名在当前网络常被拦截且连接可能长时间挂起，
+        用守护线程 + 8秒超时兜底，避免拖慢整体探测"""
+        import threading
+        import time
+
+        result: dict = {}
+
+        def worker():
+            t0 = time.time()
+            try:
+                import akshare as ak
+                df = ak.stock_zh_a_hist(
+                    symbol="600000", period="daily",
+                    start_date="20260801", end_date="20260806", adjust="qfq",
+                )
+                ok = df is not None and not df.empty
+                result["status"] = "ok" if ok else "fail"
+                result["latency_ms"] = int((time.time() - t0) * 1000)
+                result["detail"] = "" if ok else "无数据返回"
+            except Exception as e:
+                result["status"] = "fail"
+                result["latency_ms"] = int((time.time() - t0) * 1000)
+                result["detail"] = f"{type(e).__name__}: {str(e)[:60]}"
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(8)
+        if t.is_alive():
+            return {"status": "fail", "latency_ms": 8000, "detail": "连接超时（>8秒）"}
+        return result
+
+    def _probe_fast(self, key: str) -> dict:
+        """探测请求可控超时的数据源（腾讯/新浪/tushare）"""
+        import time
+
+        t0 = time.time()
+        try:
+            if key == "akshare":
+                import akshare as ak
+                df = ak.stock_zh_a_hist(
+                    symbol="600000", period="daily",
+                    start_date="20260801", end_date="20260806", adjust="qfq",
+                )
+                ok = df is not None and not df.empty
+            elif key == "tencent":
+                import requests
+                r = requests.get(
+                    "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+                    params={"param": "sh600000,day,2026-08-01,2026-08-06,10,qfq"},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                    timeout=8,
+                )
+                data = r.json().get("data", {}).get("sh600000", {})
+                ok = bool(data.get("qfqday") or data.get("day"))
+            elif key == "sina":
+                import requests
+                r = requests.get(
+                    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_lscjfb",
+                    params={"page": 1, "num": 1, "sort": "opendate", "asc": 0, "daima": "sh600000"},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"},
+                    timeout=8,
+                )
+                ok = bool(r.json())
+            elif key == "tushare":
+                from config.settings import Settings
+                token = Settings().data_source.tushare_token
+                if not token:
+                    return {"status": "fail", "latency_ms": 0, "detail": "未配置 tushare_token"}
+                import tushare as ts
+                ts.set_token(token)
+                df = ts.pro_api().daily(ts_code="600000.SH", start_date="20260801", end_date="20260806")
+                ok = df is not None and not df.empty
+            else:
+                return {"status": "fail", "latency_ms": 0, "detail": f"未知数据源 {key}"}
+        except Exception as e:
+            return {"status": "fail", "latency_ms": int((time.time() - t0) * 1000),
+                    "detail": f"{type(e).__name__}: {str(e)[:60]}"}
+        return {"status": "ok" if ok else "fail", "latency_ms": int((time.time() - t0) * 1000),
+                "detail": "" if ok else "无数据返回"}
+
+    def api_fetch(self, params: dict):
+        """按指定数据源拉取股票数据并入库
+
+        参数: source=auto|akshare|tencent|sina|tushare, code, beg, end（YYYYMMDD）
+        - K线源(auto/akshare/tencent/tushare): 拉K线→合并资金流→入库→返回统计与预览
+        - sina: 仅用新浪资金流更新库中已有K线的资金流字段
+        """
+        import pandas as pd
+        from database.db import get_kline, save_kline
+
+        source = (params.get("source") or "auto").strip() or "auto"
+        code = (params.get("code") or "").strip()
+        beg = (params.get("beg") or "").strip()
+        end = (params.get("end") or "").strip()
+        if not (code and beg and end):
+            self._send_json({"error": "缺少参数 code/beg/end"}, 400)
+            return
+
+        logger.info("API /api/fetch: source=%s code=%s beg=%s end=%s", source, code, beg, end)
+        fetcher = DataFetcher()
+
+        # ---- 新浪: 仅资金流 ----
+        if source == "sina":
+            ff = fetcher._fetch_fund_flow_via_sina(code)
+            if ff.empty:
+                self._send_json({"error": f"新浪接口未获取到 {code} 资金流数据"}, 404)
+                return
+            kline = get_kline(code, "1900-01-01", "2100-01-01")
+            if kline.empty:
+                self._send_json({"error": f"库中暂无 {code} 的K线，请先用K线接口拉取"}, 400)
+                return
+            ff["date"] = pd.to_datetime(ff["date"])
+            merged = kline[["date"]].merge(ff, on="date", how="left")
+            kline = kline.drop(columns=[c for c in ff.columns if c != "date"])
+            merged = pd.concat([kline, merged.drop(columns=["date"])], axis=1)
+            saved = save_kline(merged, code)
+            # 统一返回统计与预览（范围取库中全部记录）
+            full = get_kline(code, "1900-01-01", "2100-01-01")
+            preview = full.head(5).to_dict(orient="records")
+            for r in preview:
+                r["date"] = r["date"].strftime("%Y-%m-%d")
+            self._send_json(
+                {"ok": True, "source": "sina", "code": code, "name": _stock_name(code),
+                 "count": len(full),
+                 "first": full["date"].min().strftime("%Y-%m-%d"),
+                 "last": full["date"].max().strftime("%Y-%m-%d"),
+                 "last_close": float(full.iloc[-1]["close"]) if not full.empty else None,
+                 "saved": saved, "preview": preview,
+                 "message": f"资金流已更新 {saved} 条（{ff['date'].min().date()} ~ {ff['date'].max().date()}）"},
+                200,
+            )
+            return
+
+        # ---- K线源 ----
+        try:
+            if source == "auto":
+                df = fetcher.fetch_stock(code, beg, end, use_db=True)
+            elif source == "akshare":
+                df = fetcher._fetch_via_akshare(code, beg, end)
+            elif source == "tencent":
+                df = fetcher._fetch_via_tencent(code, beg, end)
+            elif source == "tushare":
+                df = fetcher._fetch_via_tushare(code, beg, end)
+            else:
+                self._send_json({"error": f"未知数据源: {source}"}, 400)
+                return
+        except Exception as e:
+            logger.exception("拉取 %s 失败: %s", code, e)
+            self._send_json({"error": f"拉取失败（{source}）: {e}"}, 500)
+            return
+
+        if df.empty:
+            self._send_json({"error": f"数据源 {source} 未获取到 {code} 的K线数据"}, 404)
+            return
+
+        # 非auto源: 标准化→计算量比→合并资金流→入库
+        saved = 0
+        if source != "auto":
+            df = fetcher._normalize_columns(df).sort_values("date").reset_index(drop=True)
+            df = fetcher._calc_volume_ratio(df, code, beg.replace("-", ""))
+            df = fetcher._merge_fund_flow(df, code)
+            saved = save_kline(df, code)
+
+        # 从库返回统计与预览
+        full = get_kline(code, beg, end)
+        if full.empty:
+            self._send_json({"error": f"入库后仍未获取到 {code} 的K线数据"}, 404)
+            return
+        preview = full.head(5).to_dict(orient="records")
+        for r in preview:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+        self._send_json(
+            {"ok": True, "source": source, "code": code, "name": _stock_name(code),
+             "count": len(full),
+             "first": full["date"].min().strftime("%Y-%m-%d"),
+             "last": full["date"].max().strftime("%Y-%m-%d"),
+             "last_close": float(full.iloc[-1]["close"]),
+             "saved": saved, "preview": preview},
+            200,
+        )
+
     # ---------- 工具 ----------
 
     def _send_cors_headers(self):
@@ -194,7 +411,8 @@ def main():
     args = parser.parse_args()
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), QuantHandler)
-    print(f"回测服务已启动: http://127.0.0.1:{args.port}/backtest.html")
+    print(f"量化工具服务已启动: http://127.0.0.1:{args.port}/")
+    print(f"功能入口: /（index.html）, /backtest.html, /macd.html")
     print(f"数据API: /api/kline, /api/search （浏览器拉数据时自动入库）")
     try:
         server.serve_forever()

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>量化交易工具入口</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 6px; color: #1a73e8; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    display: block;
+    background: #fff;
+    border-radius: 8px;
+    padding: 22px;
+    text-decoration: none;
+    color: inherit;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    border: 1px solid transparent;
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); border-color: #1a73e8; transform: translateY(-2px); }
+  .card-icon { font-size: 28px; margin-bottom: 10px; }
+  .card h2 { font-size: 16px; color: #1a73e8; margin-bottom: 8px; white-space: nowrap; }
+  .card p { font-size: 13px; color: #666; }
+  .card .tag {
+    display: inline-block;
+    font-size: 11px;
+    color: #1a73e8;
+    background: #e8f0fe;
+    border-radius: 3px;
+    padding: 2px 8px;
+    margin-top: 12px;
+    white-space: nowrap;
+  }
+  .footer { margin-top: 24px; font-size: 12px; color: #999; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>量化交易工具</h1>
+  <div class="subtitle">选择功能进入，拉取股票数据时将自动存入数据库</div>
+
+  <div class="cards">
+    <a class="card" href="fetch.html">
+      <div class="card-icon">⬇️</div>
+      <h2>股票数据拉取</h2>
+      <p>选择数据接口（东方财富/腾讯/新浪/tushare）拉取股票K线与资金流，查看接口可用状态。</p>
+      <span class="tag">多接口可选</span>
+    </a>
+    <a class="card" href="backtest.html">
+      <div class="card-icon">📊</div>
+      <h2>策略回测工具</h2>
+      <p>输入股票代码拉取行情，运行策略回测，查看K线、买卖点、交易明细和净值曲线。</p>
+      <span class="tag">MACD / 均线等策略</span>
+    </a>
+    <a class="card" href="macd.html">
+      <div class="card-icon">📈</div>
+      <h2>MACD计算工具</h2>
+      <p>输入股票代码拉取行情，计算MACD、DIF、DEA指标，查看金叉死叉信号图表。</p>
+      <span class="tag">技术指标分析</span>
+    </a>
+  </div>
+
+  <div class="footer">数据源：akshare(东方财富) / 腾讯行情，数据自动入库后重复拉取仅增量更新。</div>
+</div>
+</body>
+</html>

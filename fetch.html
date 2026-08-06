@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>股票数据拉取</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; align-items: flex-end; }
+  .field { flex: 1; min-width: 140px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; white-space: nowrap; }
+  input, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #1a73e8; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  button:disabled { background: #b3cdf5; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+  .okmsg { color: #34a853; font-size: 13px; margin-top: 8px; display: none; }
+
+  /* 数据源卡片 */
+  .source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .source-card {
+    position: relative;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    background: #fafbfc;
+  }
+  .source-card.selected { border-color: #1a73e8; background: #eef4fd; box-shadow: 0 0 0 1px #1a73e8; }
+  .source-card.disabled { opacity: 0.55; cursor: not-allowed; }
+  .source-card .s-name { font-size: 14px; font-weight: 600; color: #333; white-space: nowrap; }
+  .source-card .s-type { font-size: 11px; color: #1a73e8; background: #e8f0fe; border-radius: 3px; padding: 1px 6px; display: inline-block; margin-top: 4px; white-space: nowrap; }
+  .source-card .s-desc { font-size: 12px; color: #888; margin-top: 6px; }
+  .source-card .s-status { font-size: 11px; margin-top: 8px; white-space: nowrap; }
+  .s-status .badge { display: inline-block; border-radius: 3px; padding: 1px 7px; }
+  .badge.ok { background: #e6f4ea; color: #1e8e3e; }
+  .badge.fail { background: #fce8e6; color: #d93025; }
+  .badge.checking { background: #fef7e0; color: #b06000; }
+  .radio-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #bbb; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+  .source-card.selected .radio-dot { border-color: #1a73e8; background: radial-gradient(circle, #1a73e8 40%, transparent 45%); }
+
+  /* 结果 */
+  .result-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+  .result-card { background: #f8f9fa; border-radius: 6px; padding: 12px; border-left: 3px solid #1a73e8; }
+  .result-card h3 { font-size: 12px; color: #888; margin-bottom: 6px; font-weight: 500; white-space: nowrap; }
+  .result-card .value { font-family: Consolas, monospace; font-weight: 700; font-size: 16px; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #eee; font-family: Consolas, monospace; }
+  th { background: #f8f9fa; color: #666; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .legend { font-size: 12px; color: #999; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <h1>股票数据拉取</h1>
+    <a class="back" href="index.html">← 返回入口</a>
+  </div>
+  <div class="subtitle">选择数据接口拉取股票数据，拉取结果自动入库</div>
+
+  <!-- 股票与范围 -->
+  <div class="panel">
+    <h2>股票与数据范围</h2>
+    <div class="row">
+      <div class="field" style="flex:2">
+        <label>股票代码 / 名称</label>
+        <input type="text" id="stockInput" placeholder="例如: 600000 或 浦发银行" autocomplete="off">
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <select id="rangeMode" style="width:auto; min-width:130px;">
+          <option value="recent2y" selected>最近 2 年</option>
+          <option value="recent1y">最近 1 年</option>
+          <option value="recent6m">最近 6 个月</option>
+          <option value="period">自定义时间段</option>
+        </select>
+      </div>
+      <div class="field" style="flex:0 0 auto; display:none;" id="periodRow">
+        <label>起止日期</label>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="date" id="begDate" style="width:140px;">
+          <span style="color:#999;">至</span>
+          <input type="date" id="endDate" style="width:140px;">
+        </div>
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <button id="fetchBtn" onclick="doFetch()">拉取数据</button>
+      </div>
+    </div>
+    <div class="hint" id="rangeHint">默认拉取最近 2 年（约 500 个交易日）</div>
+  </div>
+
+  <!-- 数据源选择 -->
+  <div class="panel">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <h2 style="margin:0; border:none; padding:0;">数据接口</h2>
+      <button class="secondary" id="probeBtn" onclick="loadSources()">重新检测可用性</button>
+    </div>
+    <div class="source-grid" id="sourceGrid"></div>
+    <div class="legend" id="sourceLegend"></div>
+  </div>
+
+  <!-- 拉取结果 -->
+  <div class="panel" id="resultPanel" style="display:none;">
+    <h2>拉取结果</h2>
+    <div class="result-grid" id="resultStats"></div>
+    <h2 style="margin-top:16px;">数据预览（前 5 行）</h2>
+    <table id="previewTable"></table>
+  </div>
+
+  <div class="error" id="errorBox"></div>
+  <div class="okmsg" id="okBox"></div>
+</div>
+
+<script>
+// ============ 配置 ============
+const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
+  ? 'http://127.0.0.1:8000' : '';
+const UNIT_DAYS = { recent2y: 760, recent1y: 400, recent6m: 200 };
+
+const SOURCE_META = {
+  auto:    { name: '自动选择', type: 'K线+资金流' },
+  akshare: { name: '东方财富', type: 'K线+资金流' },
+  tencent: { name: '腾讯行情', type: 'K线' },
+  sina:    { name: '新浪财经', type: '资金流' },
+  tushare: { name: 'tushare', type: 'K线' },
+};
+
+let selectedSource = 'auto';
+
+// ============ 工具 ============
+function showError(msg) {
+  const el = document.getElementById('errorBox');
+  el.style.display = 'block';
+  el.textContent = msg;
+  document.getElementById('okBox').style.display = 'none';
+}
+function showOk(msg) {
+  const el = document.getElementById('okBox');
+  el.style.display = 'block';
+  el.textContent = msg;
+  document.getElementById('errorBox').style.display = 'none';
+}
+function dateToYYYYMMDD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
+
+// 解析输入: 6位代码直接用，否则走名称搜索
+async function resolveCode(input) {
+  input = input.trim();
+  if (/^\d{6}$/.test(input)) return { code: input, name: '' };
+  const res = await fetch(`${API_BASE}/api/search?keyword=${encodeURIComponent(input)}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  const list = data.data || [];
+  if (!list.length) throw new Error(`未找到 "${input}" 对应的股票`);
+  return { code: list[0].Code, name: list[0].Name };
+}
+
+function buildRange() {
+  const mode = document.getElementById('rangeMode').value;
+  if (mode === 'period') {
+    const b = document.getElementById('begDate').value.replace(/-/g, '');
+    const e = document.getElementById('endDate').value.replace(/-/g, '');
+    if (!b || !e) throw new Error('请选择起止日期');
+    if (b > e) throw new Error('起始日期不能晚于结束日期');
+    return { beg: b, end: e };
+  }
+  const days = UNIT_DAYS[mode];
+  const end = new Date();
+  const beg = new Date();
+  beg.setDate(beg.getDate() - days);
+  return { beg: dateToYYYYMMDD(beg), end: dateToYYYYMMDD(end) };
+}
+
+// ============ 数据源探测 ============
+async function loadSources() {
+  const grid = document.getElementById('sourceGrid');
+  const probeBtn = document.getElementById('probeBtn');
+  // 先渲染占位（检测中）
+  renderSourceCards([{ key: 'auto', status: 'ok', latency_ms: 0 }], 'placeholder');
+  probeBtn.disabled = true;
+  probeBtn.textContent = '检测中...';
+  try {
+    const res = await fetch(`${API_BASE}/api/sources`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    renderSourceCards(data.data || []);
+    document.getElementById('sourceLegend').textContent =
+      '提示：自动选择（东方财富优先，失败回退腾讯）适合日常使用；新浪仅补充资金流，需先有K线；tushare 需配置 token。';
+  } catch (e) {
+    showError('检测接口可用性失败: ' + e.message);
+  } finally {
+    probeBtn.disabled = false;
+    probeBtn.textContent = '重新检测可用性';
+  }
+}
+
+function renderSourceCards(sources, mode) {
+  const grid = document.getElementById('sourceGrid');
+  grid.innerHTML = '';
+  for (const s of sources) {
+    const meta = SOURCE_META[s.key] || {};
+    const isChecking = mode === 'placeholder' && s.key !== 'auto';
+    const badge = isChecking ? '<span class="badge checking">检测中</span>'
+      : s.status === 'ok' ? `<span class="badge ok">可用 ${s.latency_ms}ms</span>`
+      : `<span class="badge fail">不可用 ${s.latency_ms || 0}ms</span>`;
+    const detail = (!isChecking && s.status === 'fail' && s.detail)
+      ? `<div class="s-desc" title="${s.detail}" style="color:#d93025;">${s.detail}</div>` : '';
+    const card = document.createElement('div');
+    card.className = 'source-card' + (s.key === selectedSource ? ' selected' : '') +
+      (s.status === 'fail' && s.key !== 'auto' ? ' disabled' : '');
+    card.dataset.key = s.key;
+    card.innerHTML = `
+      <div class="s-name"><span class="radio-dot"></span>${meta.name || s.key}</div>
+      <div><span class="s-type">${meta.type || ''}</span></div>
+      ${detail}
+      <div class="s-status">${badge}</div>`;
+    card.onclick = () => selectSource(s.key, s.status !== 'fail');
+    grid.appendChild(card);
+  }
+}
+
+function selectSource(key, enabled) {
+  if (!enabled) { showError(`${SOURCE_META[key] ? SOURCE_META[key].name : key} 当前不可用，请选择其他接口`); return; }
+  selectedSource = key;
+  document.querySelectorAll('.source-card').forEach(c => c.classList.toggle('selected', c.dataset.key === key));
+  const btn = document.getElementById('fetchBtn');
+  btn.textContent = key === 'sina' ? '补资金流' : '拉取数据';
+  const hint = document.getElementById('rangeHint');
+  hint.textContent = key === 'sina'
+    ? '新浪接口仅提供资金流数据，将更新库中该股票已有K线的资金流字段'
+    : '默认拉取最近 2 年（约 500 个交易日）';
+}
+
+// ============ 拉取 ============
+async function doFetch() {
+  showError(''); document.getElementById('errorBox').style.display = 'none';
+  document.getElementById('okBox').style.display = 'none';
+  const input = document.getElementById('stockInput').value.trim();
+  if (!input) { showError('请输入股票代码或名称'); return; }
+
+  const fetchBtn = document.getElementById('fetchBtn');
+  fetchBtn.disabled = true;
+  const oldText = fetchBtn.textContent;
+  fetchBtn.textContent = '拉取中...';
+  try {
+    const { code, name } = await resolveCode(input);
+    const range = buildRange();
+    const url = `${API_BASE}/api/fetch?source=${encodeURIComponent(selectedSource)}` +
+      `&code=${code}&beg=${range.beg}&end=${range.end}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    renderResult(data, name);
+    showOk(data.message || '');
+    document.getElementById('resultPanel').style.display = 'block';
+    document.getElementById('stockInfoHint') && (document.getElementById('stockInfoHint').textContent = '');
+  } catch (e) {
+    showError('拉取失败: ' + e.message);
+  } finally {
+    fetchBtn.disabled = false;
+    fetchBtn.textContent = oldText;
+  }
+}
+
+function fmtMoney(v) {
+  if (v === null || v === undefined || isNaN(v)) return '-';
+  const abs = Math.abs(v);
+  if (abs >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (abs >= 1e4) return (v / 1e4).toFixed(0) + '万';
+  return v.toFixed(0);
+}
+
+function renderResult(data, nameHint) {
+  const stats = document.getElementById('resultStats');
+  const name = data.name || nameHint || '';
+  stats.innerHTML = `
+    <div class="result-card"><h3>股票</h3><div class="value">${data.code} ${name}</div></div>
+    <div class="result-card"><h3>交易日数</h3><div class="value">${data.count} 条</div></div>
+    <div class="result-card"><h3>区间</h3><div class="value" style="font-size:13px;">${data.first} ~ ${data.last}</div></div>
+    <div class="result-card"><h3>最新收盘</h3><div class="value">${data.last_close}</div></div>`;
+
+  const table = document.getElementById('previewTable');
+  const cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turnover', 'pct_change', 'main_net_inflow'];
+  const head = cols.map(c => {
+    const labels = { date: '日期', open: '开盘', high: '最高', low: '最低', close: '收盘',
+      volume: '成交量', amount: '成交额', turnover: '换手率%', pct_change: '涨跌幅%',
+      main_net_inflow: '主力净流入' };
+    return `<th>${labels[c] || c}</th>`;
+  }).join('');
+  const body = (data.preview || []).map(r => `
+    <tr>
+      <td>${r.date}</td>
+      <td>${r.open}</td><td>${r.high}</td><td>${r.low}</td><td>${r.close}</td>
+      <td>${r.volume != null ? Math.round(r.volume / 10000) + '万' : '-'}</td>
+      <td>${r.amount != null ? fmtMoney(r.amount) : '-'}</td>
+      <td>${r.turnover != null ? Number(r.turnover).toFixed(2) : '-'}</td>
+      <td>${r.pct_change != null ? Number(r.pct_change).toFixed(2) : '-'}</td>
+      <td style="color:${r.main_net_inflow >= 0 ? '#e8453c' : '#34a853'};">${r.main_net_inflow != null ? fmtMoney(r.main_net_inflow) : '-'}</td>
+    </tr>`).join('');
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  const saveHint = data.saved ? `，本次入库 ${data.saved} 条` : '';
+  document.getElementById('sourceLegend').textContent =
+    `已使用接口：${SOURCE_META[data.source] ? SOURCE_META[data.source].name : data.source}${saveHint}。数据已存入数据库，可到回测/MACD页面直接使用。`;
+}
+
+// ============ 初始化 ============
+document.getElementById('rangeMode').addEventListener('change', function () {
+  document.getElementById('periodRow').style.display = this.value === 'period' ? 'flex' : 'none';
+  const hint = document.getElementById('rangeHint');
+  if (this.value === 'period') hint.textContent = '选择起止日期后点击拉取';
+  else hint.textContent = selectedSource === 'sina' ? '' : '默认拉取最近 2 年（约 500 个交易日）';
+});
+// 默认起止日期
+const today = new Date();
+const begDefault = new Date(); begDefault.setDate(begDefault.getDate() - 760);
+document.getElementById('begDate').value = begDefault.toISOString().slice(0, 10);
+document.getElementById('endDate').value = today.toISOString().slice(0, 10);
+
+loadSources();
+</script>
+</body>
+</html>

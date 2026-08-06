@@ -12,6 +12,122 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from database.db import get_connection, db_cursor
 
 
+# 字段注释：COMMENT ON COLUMN 为幂等操作，可用于已存在的表补注释
+TABLE_COMMENTS = {
+    "market_data.daily_kline": "日K线行情表",
+    "market_data.stock_info": "股票基本信息表",
+    "backtest.results": "回测结果表",
+    "backtest.trades": "回测交易记录表",
+    "backtest.nav": "回测每日净值表",
+    "portfolio.positions": "持仓表",
+    "strategy.config": "策略配置表",
+}
+
+COLUMN_COMMENTS = {
+    "market_data.daily_kline": {
+        "id": "主键",
+        "symbol": "股票代码（如 600000）",
+        "trade_date": "交易日期",
+        "open": "开盘价（元）",
+        "high": "最高价（元）",
+        "low": "最低价（元）",
+        "close": "收盘价（元）",
+        "volume": "成交量（股）",
+        "amount": "成交额（元）",
+        "turnover": "换手率（%）",
+        "pct_change": "涨跌幅（%）",
+        "change": "涨跌额（元）",
+        "amplitude": "振幅（%）",
+        "volume_ratio": "量比（当日成交量 / 过去5日平均成交量）",
+        "main_net_inflow": "主力净流入（元，超大单+大单）",
+        "super_large_net_inflow": "超大单净流入（元）",
+        "large_net_inflow": "大单净流入（元）",
+        "medium_net_inflow": "中单净流入（元）",
+        "small_net_inflow": "小单净流入（元）",
+        "created_at": "记录创建时间",
+    },
+    "market_data.stock_info": {
+        "symbol": "股票代码（主键）",
+        "name": "股票名称",
+        "market": "市场（sh/sz/bj）",
+        "industry": "所属行业",
+        "concept": "概念板块（数组）",
+        "list_date": "上市日期",
+        "total_share": "总股本（股）",
+        "float_share": "流通股本（股）",
+        "total_market_cap": "总市值（元）",
+        "float_market_cap": "流通市值（元）",
+        "created_at": "记录创建时间",
+        "updated_at": "记录更新时间",
+    },
+    "backtest.results": {
+        "id": "主键",
+        "strategy_name": "策略名称",
+        "symbol": "回测股票代码",
+        "start_date": "回测开始日期",
+        "end_date": "回测结束日期",
+        "initial_capital": "初始资金（元）",
+        "final_capital": "期末资金（元）",
+        "total_return": "总收益率",
+        "annual_return": "年化收益率",
+        "max_drawdown": "最大回撤",
+        "sharpe_ratio": "夏普比率",
+        "params": "策略参数（JSON）",
+        "created_at": "记录创建时间",
+    },
+    "backtest.trades": {
+        "id": "主键",
+        "result_id": "回测结果ID（外键）",
+        "symbol": "股票代码",
+        "trade_type": "交易方向（buy买入/sell卖出）",
+        "trade_date": "交易日期",
+        "price": "成交价格（元）",
+        "quantity": "成交数量（股）",
+        "commission": "手续费（元）",
+        "created_at": "记录创建时间",
+    },
+    "backtest.nav": {
+        "id": "主键",
+        "result_id": "回测结果ID（外键）",
+        "nav_date": "净值日期",
+        "cash": "现金余额（元）",
+        "market_value": "持仓市值（元）",
+        "total_value": "总资产（元，现金+市值）",
+        "nav": "当日净值",
+        "created_at": "记录创建时间",
+    },
+    "portfolio.positions": {
+        "id": "主键",
+        "symbol": "股票代码",
+        "quantity": "持仓数量（股）",
+        "avg_cost": "平均成本（元）",
+        "current_price": "最新价（元）",
+        "created_at": "记录创建时间",
+        "updated_at": "记录更新时间",
+    },
+    "strategy.config": {
+        "id": "主键",
+        "strategy_name": "策略名称",
+        "strategy_type": "策略类型（如 macd/均线）",
+        "params": "策略参数（JSON）",
+        "is_active": "是否启用",
+        "created_at": "记录创建时间",
+        "updated_at": "记录更新时间",
+    },
+}
+
+
+def add_column_comments():
+    """为所有表的字段补充注释（幂等）"""
+    with db_cursor() as cur:
+        for table, comment in TABLE_COMMENTS.items():
+            cur.execute(f"COMMENT ON TABLE {table} IS %s", (comment,))
+        for table, cols in COLUMN_COMMENTS.items():
+            for col, comment in cols.items():
+                cur.execute(f"COMMENT ON COLUMN {table}.{col} IS %s", (comment,))
+    print("字段注释已补充完成")
+
+
 def main():
     with db_cursor() as cur:
         # 创建模式
@@ -169,6 +285,9 @@ def main():
             )
         """)
         print("表 strategy.config 创建成功")
+
+    # 补充表和字段注释（幂等）
+    add_column_comments()
 
     print("\n所有数据库表结构初始化完成！")
 
