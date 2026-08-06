@@ -162,11 +162,12 @@ const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome
 const UNIT_DAYS = { recent2y: 760, recent1y: 400, recent6m: 200 };
 
 const SOURCE_META = {
-  auto:    { name: '自动选择', type: 'K线+资金流' },
-  akshare: { name: '东方财富', type: 'K线+资金流' },
-  tencent: { name: '腾讯行情', type: 'K线' },
-  sina:    { name: '新浪财经', type: '资金流' },
-  tushare: { name: 'tushare', type: 'K线' },
+  auto:      { name: '自动选择', type: 'K线+资金流' },
+  akshare:   { name: 'akshare', type: 'K线+资金流' },
+  eastmoney: { name: '东方财富', type: 'K线' },
+  tencent:   { name: '腾讯行情', type: 'K线' },
+  sina:      { name: '新浪财经', type: '资金流' },
+  tushare:   { name: 'tushare', type: 'K线' },
 };
 
 let selectedSource = 'auto';
@@ -233,7 +234,7 @@ async function loadSources() {
     if (data.error) throw new Error(data.error);
     renderSourceCards(data.data || []);
     document.getElementById('sourceLegend').textContent =
-      '提示：自动选择（东方财富优先，失败回退腾讯）适合日常使用；新浪仅补充资金流，需先有K线；tushare 需配置 token。';
+      '提示：akshare=akshare库抓取的A股行情（数据源为东方财富）；东方财富=直连东财K线接口；自动选择优先akshare、失败回退腾讯。新浪仅补充资金流，需先有K线；tushare 需配置 token。';
   } catch (e) {
     showError('检测接口可用性失败: ' + e.message);
   } finally {

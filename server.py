@@ -171,15 +171,17 @@ class QuantHandler(SimpleHTTPRequestHandler):
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        keys = ["akshare", "tencent", "sina", "tushare"]
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        keys = ["akshare", "eastmoney", "tencent", "sina", "tushare"]
+        with ThreadPoolExecutor(max_workers=5) as pool:
             probes = dict(zip(keys, pool.map(self._probe_source, keys)))
 
         base = {
             "auto": {"key": "auto", "name": "自动选择", "type": "K线+资金流",
-                     "desc": "东方财富优先，失败自动回退腾讯行情", "status": "ok", "latency_ms": 0, "detail": ""},
-            "akshare": {"key": "akshare", "name": "东方财富", "type": "K线+资金流",
-                        "desc": "akshare 主数据源", **probes["akshare"]},
+                     "desc": "akshare(东财)优先，失败自动回退腾讯行情", "status": "ok", "latency_ms": 0, "detail": ""},
+            "akshare": {"key": "akshare", "name": "akshare", "type": "K线+资金流",
+                        "desc": "akshare库抓取A股行情（数据源东财）", **probes["akshare"]},
+            "eastmoney": {"key": "eastmoney", "name": "东方财富", "type": "K线",
+                          "desc": "直连东财K线接口（不依赖akshare）", **probes["eastmoney"]},
             "tencent": {"key": "tencent", "name": "腾讯行情", "type": "K线",
                         "desc": "备用K线源（无资金流）", **probes["tencent"]},
             "sina": {"key": "sina", "name": "新浪财经", "type": "资金流",
@@ -187,7 +189,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
             "tushare": {"key": "tushare", "name": "tushare", "type": "K线",
                         "desc": "专业数据源（需token）", **probes["tushare"]},
         }
-        self._send_json({"data": [base[k] for k in ["auto", "akshare", "tencent", "sina", "tushare"]]}, 200)
+        self._send_json({"data": [base[k] for k in ["auto", "akshare", "eastmoney", "tencent", "sina", "tushare"]]}, 200)
 
     def _probe_source(self, key: str) -> dict:
         """探测单个数据源连通性（akshare 内部无超时控制，单独用线程做超时保护）"""
@@ -250,6 +252,17 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 )
                 data = r.json().get("data", {}).get("sh600000", {})
                 ok = bool(data.get("qfqday") or data.get("day"))
+            elif key == "eastmoney":
+                import requests
+                r = requests.get(
+                    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                    params={"secid": "1.600000", "fields1": "f1,f2,f3",
+                            "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                            "klt": "101", "fqt": "1", "beg": "20260801", "end": "20260806"},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"},
+                    timeout=8,
+                )
+                ok = bool((r.json().get("data") or {}).get("klines"))
             elif key == "sina":
                 import requests
                 r = requests.get(
@@ -335,6 +348,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 df = fetcher.fetch_stock(code, beg, end, use_db=True)
             elif source == "akshare":
                 df = fetcher._fetch_via_akshare(code, beg, end)
+            elif source == "eastmoney":
+                df = fetcher._fetch_via_eastmoney(code, beg, end)
             elif source == "tencent":
                 df = fetcher._fetch_via_tencent(code, beg, end)
             elif source == "tushare":

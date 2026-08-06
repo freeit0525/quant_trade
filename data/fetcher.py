@@ -367,6 +367,73 @@ class DataFetcher:
             logger.error(f"akshare获取数据失败: {e}")
             return pd.DataFrame()
 
+    def _fetch_via_eastmoney(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """直连东方财富行情接口获取前复权日K线（不依赖akshare库）
+
+        返回列: date/open/close/high/low/volume(股)/amount(元)/amplitude(%)/pct_change(%)/change(元)/turnover(%)
+        """
+        import requests
+
+        secid = f"1.{symbol}" if symbol.startswith(("6", "9")) else f"0.{symbol}"
+        logger.info(f"直连东方财富获取 {secid} 数据...")
+        try:
+            url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                "secid": secid,
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "klt": "101",        # 日线
+                "fqt": "1",          # 前复权
+                "beg": start_date,
+                "end": end_date,
+            }
+            resp = requests.get(
+                url,
+                params=params,
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                    "Referer": "https://quote.eastmoney.com/",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+            klines = data.get("klines") or []
+            if not klines:
+                logger.warning(f"东方财富无 {secid} 数据")
+                return pd.DataFrame()
+
+            # klines 每行格式: 日期,开,收,高,低,量(手),额(元),振幅%,涨跌幅%,涨跌额,换手率%
+            rows = []
+            for line in klines:
+                p = line.split(",")
+                if len(p) < 11:
+                    continue
+                try:
+                    rows.append({
+                        "date": pd.to_datetime(p[0]),
+                        "open": float(p[1]),
+                        "close": float(p[2]),
+                        "high": float(p[3]),
+                        "low": float(p[4]),
+                        "volume": float(p[5]) * 100,  # 手 -> 股
+                        "amount": float(p[6]),
+                        "amplitude": float(p[7]) if p[7] else None,
+                        "pct_change": float(p[8]) if p[8] else None,
+                        "change": float(p[9]) if p[9] else None,
+                        "turnover": float(p[10]) if p[10] else None,
+                    })
+                except (ValueError, TypeError, IndexError):
+                    continue
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df = df.sort_values("date").reset_index(drop=True)
+            return df
+        except Exception as e:
+            logger.error(f"东方财富直连接口获取数据失败: {e}")
+            return pd.DataFrame()
+
     def _fetch_via_tencent(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """通过腾讯行情接口获取前复权日线数据（备用数据源）
 
