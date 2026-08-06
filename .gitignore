@@ -19,3 +19,10 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Secrets
+.env
+
+# Data cache
+cache/
+*.csv
