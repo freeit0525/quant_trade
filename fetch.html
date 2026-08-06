@@ -112,6 +112,7 @@
       <div class="field" style="flex:0 0 auto;">
         <label>数据范围</label>
         <select id="rangeMode" style="width:auto; min-width:130px;">
+          <option value="all">上市至今（全量）</option>
           <option value="recent2y" selected>最近 2 年</option>
           <option value="recent1y">最近 1 年</option>
           <option value="recent6m">最近 6 个月</option>
@@ -206,7 +207,7 @@ async function resolveCode(input) {
   return { code: list[0].Code, name: list[0].Name };
 }
 
-function buildRange() {
+async function buildRange(code) {
   const mode = document.getElementById('rangeMode').value;
   if (mode === 'period') {
     const b = document.getElementById('begDate').value.replace(/-/g, '');
@@ -214,6 +215,14 @@ function buildRange() {
     if (!b || !e) throw new Error('请选择起止日期');
     if (b > e) throw new Error('起始日期不能晚于结束日期');
     return { beg: b, end: e };
+  }
+  if (mode === 'all') {
+    // 全量: 从库表上市日期拉至今日
+    const res = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
+    const data = await res.json();
+    if (data.error) throw new Error(`无法获取上市日期: ${data.error}`);
+    if (!data.list_date) throw new Error(`库中暂无 ${code} 的上市日期，无法全量拉取`);
+    return { beg: data.list_date.replace(/-/g, ''), end: dateToYYYYMMDD(new Date()) };
   }
   const days = UNIT_DAYS[mode];
   const end = new Date();
@@ -278,9 +287,13 @@ function selectSource(key, enabled) {
   const btn = document.getElementById('fetchBtn');
   btn.textContent = key === 'sina' ? '补资金流' : '拉取数据';
   const hint = document.getElementById('rangeHint');
-  hint.textContent = key === 'sina'
-    ? '新浪接口仅提供资金流数据，将更新库中该股票已有K线的资金流字段'
-    : '默认拉取最近 2 年（约 500 个交易日）';
+  if (key === 'sina') {
+    hint.textContent = '新浪接口仅提供资金流数据，将更新库中该股票已有K线的资金流字段';
+  } else if (document.getElementById('rangeMode').value === 'all') {
+    hint.textContent = '全量拉取：从库表上市日期拉至今日，一次入库后仅增量更新';
+  } else {
+    hint.textContent = '默认拉取最近 2 年（约 500 个交易日）';
+  }
 }
 
 // ============ 拉取 ============
@@ -296,7 +309,7 @@ async function doFetch() {
   fetchBtn.textContent = '拉取中...';
   try {
     const { code, name } = await resolveCode(input);
-    const range = buildRange();
+    const range = await buildRange(code);
     const url = `${API_BASE}/api/fetch?source=${encodeURIComponent(selectedSource)}` +
       `&code=${code}&beg=${range.beg}&end=${range.end}`;
     const res = await fetch(url);
@@ -328,6 +341,7 @@ function renderResult(data, nameHint) {
   const name = data.name || nameHint || '';
   stats.innerHTML = `
     <div class="result-card"><h3>股票</h3><div class="value">${data.code} ${name}</div></div>
+    <div class="result-card"><h3>上市时间</h3><div class="value">${data.list_date || '-'}</div></div>
     <div class="result-card"><h3>交易日数</h3><div class="value">${data.count} 条</div></div>
     <div class="result-card"><h3>区间</h3><div class="value" style="font-size:13px;">${data.first} ~ ${data.last}</div></div>
     <div class="result-card"><h3>最新收盘</h3><div class="value">${data.last_close}</div></div>`;
@@ -357,11 +371,31 @@ function renderResult(data, nameHint) {
 }
 
 // ============ 初始化 ============
-document.getElementById('rangeMode').addEventListener('change', function () {
+document.getElementById('rangeMode').addEventListener('change', async function () {
   document.getElementById('periodRow').style.display = this.value === 'period' ? 'flex' : 'none';
   const hint = document.getElementById('rangeHint');
-  if (this.value === 'period') hint.textContent = '选择起止日期后点击拉取';
-  else hint.textContent = selectedSource === 'sina' ? '' : '默认拉取最近 2 年（约 500 个交易日）';
+  if (this.value === 'period') {
+    hint.textContent = '选择起止日期后点击拉取';
+    return;
+  }
+  if (this.value === 'all') {
+    hint.textContent = '全量拉取：从库表上市日期拉至今日，一次入库后仅增量更新';
+    const input = document.getElementById('stockInput').value.trim();
+    if (!/^\d{6}$/.test(input)) return; // 未输入具体代码时，点击拉取再查询
+    hint.textContent = '查询上市日期中...';
+    try {
+      const res = await fetch(`${API_BASE}/api/stock_info?code=${input}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      hint.textContent = data.list_date
+        ? `该股上市时间 ${data.list_date}，将从上市至今全量拉取（一次入库，之后仅增量）`
+        : `库中暂无 ${input} 的上市日期，无法全量拉取`;
+    } catch (e) {
+      hint.textContent = '上市日期查询失败: ' + e.message;
+    }
+    return;
+  }
+  hint.textContent = selectedSource === 'sina' ? '' : '默认拉取最近 2 年（约 500 个交易日）';
 });
 // 默认起止日期
 const today = new Date();

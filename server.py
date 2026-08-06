@@ -85,6 +85,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_kline(params)
             elif parsed.path == "/api/search":
                 self.api_search(params)
+            elif parsed.path == "/api/stock_info":
+                self.api_stock_info(params)
             elif parsed.path == "/api/sources":
                 self.api_sources(params)
             elif parsed.path == "/api/fetch":
@@ -163,6 +165,37 @@ class QuantHandler(SimpleHTTPRequestHandler):
             for r in rows
         ]
         self._send_json({"data": stocks}, 200)
+
+    def api_stock_info(self, params: dict):
+        """查询股票基本信息（含上市日期，来自库表 stock_info）
+
+        参数: code=股票代码
+        返回: {symbol,name,market,list_date,industry}，list_date 为 'YYYY-MM-DD' 或 null
+        """
+        code = (params.get("code") or "").strip()
+        if not code:
+            self._send_json({"error": "缺少参数 code"}, 400)
+            return
+
+        from database.db import db_cursor
+
+        with db_cursor() as cur:
+            cur.execute(
+                """SELECT symbol, name, market, list_date, industry
+                   FROM market_data.stock_info WHERE symbol = %s""",
+                (code,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            self._send_json({"error": f"库中无 {code} 的股票信息（请先导入股票列表）"}, 404)
+            return
+        self._send_json({
+            "symbol": row[0],
+            "name": row[1],
+            "market": row[2],
+            "list_date": row[3].strftime("%Y-%m-%d") if row[3] else None,
+            "industry": row[4],
+        }, 200)
 
     def api_sources(self, params: dict):
         """探测各数据源连通性（并发请求，用 600000 近5日做轻量探测）
@@ -311,14 +344,27 @@ class QuantHandler(SimpleHTTPRequestHandler):
         - sina: 仅用新浪资金流更新库中已有K线的资金流字段
         """
         import pandas as pd
-        from database.db import get_kline, save_kline
+        from database.db import get_kline, get_stock_list_date, save_kline
 
         source = (params.get("source") or "auto").strip() or "auto"
         code = (params.get("code") or "").strip()
         beg = (params.get("beg") or "").strip()
         end = (params.get("end") or "").strip()
-        if not (code and beg and end):
-            self._send_json({"error": "缺少参数 code/beg/end"}, 400)
+        if not code:
+            self._send_json({"error": "缺少参数 code"}, 400)
+            return
+        # beg=all/空: 自动取库表上市日期作为起始（全量拉取上市至今）
+        if not beg or beg.lower() == "all":
+            list_date = get_stock_list_date(code)
+            if not list_date:
+                self._send_json(
+                    {"error": f"库中无 {code} 的上市日期，无法全量拉取（可先运行导入股票信息脚本）"},
+                    400,
+                )
+                return
+            beg = list_date.replace("-", "")
+        if not end:
+            self._send_json({"error": "缺少参数 end"}, 400)
             return
 
         logger.info("API /api/fetch: source=%s code=%s beg=%s end=%s", source, code, beg, end)
@@ -346,6 +392,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 r["date"] = r["date"].strftime("%Y-%m-%d")
             self._send_json(
                 {"ok": True, "source": "sina", "code": code, "name": _stock_name(code),
+                 "list_date": get_stock_list_date(code),
                  "count": len(full),
                  "first": full["date"].min().strftime("%Y-%m-%d"),
                  "last": full["date"].max().strftime("%Y-%m-%d"),
@@ -400,6 +447,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
             r["date"] = r["date"].strftime("%Y-%m-%d")
         self._send_json(
             {"ok": True, "source": source, "code": code, "name": _stock_name(code),
+             "list_date": get_stock_list_date(code),
              "count": len(full),
              "first": full["date"].min().strftime("%Y-%m-%d"),
              "last": full["date"].max().strftime("%Y-%m-%d"),

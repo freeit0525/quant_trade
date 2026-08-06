@@ -18,7 +18,7 @@ class DatabaseConfig:
     """
     host: str = os.getenv("DB_HOST", "localhost")
     port: int = int(os.getenv("DB_PORT", "5432"))
-    dbname: str = os.getenv("DB_NAME", "quant_trading")
+    dbname: str = os.getenv("DB_NAME", "quant_trade")
     user: str = os.getenv("DB_USER", "postgres")
     password: str = os.getenv("DB_PASSWORD", "")
 

@@ -1,4 +1,4 @@
-"""初始化 quant_trading 数据库表结构
+"""初始化 quant_trade 数据库表结构
 
 - 创建模式: market_data, backtest, portfolio, strategy
 - 创建表: daily_kline, stock_info, results, trades, nav, positions, config

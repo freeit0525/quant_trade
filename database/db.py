@@ -371,6 +371,23 @@ def get_kline_min_date(symbol: str, config: DatabaseConfig | None = None) -> Opt
     return row[0].strftime("%Y-%m-%d")
 
 
+def get_stock_list_date(symbol: str, config: DatabaseConfig | None = None) -> Optional[str]:
+    """查询股票上市日期（stock_info.list_date）
+
+    Returns:
+        'YYYY-MM-DD' 字符串；库中无该股票或上市日期为空时返回 None
+    """
+    with db_cursor(config) as cur:
+        cur.execute(
+            "SELECT list_date FROM market_data.stock_info WHERE symbol = %s",
+            (symbol,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return row[0].strftime("%Y-%m-%d")
+
+
 def get_kline(
     symbol: str,
     start_date: str,
@@ -511,7 +528,7 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
                    close = EXCLUDED.close,
                    volume = EXCLUDED.volume,
                    amount = EXCLUDED.amount,
-                   # 腾讯源不提供换手率(恒为 NULL)，避免覆盖已回填的真实值
+                   -- 腾讯源不提供换手率(恒为 NULL)，避免覆盖已回填的真实值
                    turnover = COALESCE(EXCLUDED.turnover, market_data.daily_kline.turnover),
                    pct_change = EXCLUDED.pct_change,
                    change = EXCLUDED.change,
