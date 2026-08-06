@@ -28,6 +28,15 @@ _EM_HEADERS = {
 }
 
 
+# MACD 参数组：键为列名后缀（空=默认组，列名 macd_dif/dea/hist），值为 (快线, 慢线, 信号)
+MACD_GROUPS = {
+    "": (12, 26, 9),        # 默认组
+    "_6_12_5": (6, 12, 5),
+    "_3_8_3": (3, 8, 3),
+    "_10_20_7": (10, 20, 7),
+}
+
+
 # 东财请求会话（curl_cffi Chrome 指纹）：进程内复用连接；初始化失败时回退 requests
 _EM_SESSION = None
 _EM_SESSION_WARMED = False
@@ -370,6 +379,10 @@ class DataFetcher:
             df = df.sort_values("date").reset_index(drop=True)
             # 计算量比（需库中 fetch_start 之前最近5个交易日的 volume 作为窗口前置）
             df = self._calc_volume_ratio(df, symbol, fetch_start)
+            # 计算 MACD（拼接库中全量 close 重算，保证增量精确）
+            df = self._calc_macd(df, symbol)
+            # 计算 MA/RSI/KDJ（拼接库中全量 OHLC 重算，保证增量精确）
+            df = self._calc_tech_indicators(df, symbol)
             # 合并资金流向（近100天可获取，更早为 NULL）
             df = self._merge_fund_flow(df, symbol)
             fetched_dfs.append(df)
@@ -418,6 +431,8 @@ class DataFetcher:
 
         增量拉取时需拼接库中 fetch_start 之前最近5个交易日的 volume 作为滚动窗口前置，
         否则新拉取的前几行量比会因窗口不足而缺失。
+        前期数据不足时失真补全：第1天=当日量/当日量=1，第2天=当日/前1日均量，
+        第3天=当日/前2日均量……第6天起为标准5日均量。
         """
         if df.empty or "volume" not in df.columns:
             return df
@@ -435,13 +450,127 @@ class DataFetcher:
         else:
             combined = df[["date", "volume"]].copy()
 
-        # 过去5日均量（不含当日）：rolling(5).mean() 后 shift(1)
+        # 过去N日均量（不含当日，窗口随前期数据逐步扩大，min_periods=1），
+        # 首日无前一日均量时用当日量兜底 -> 量比=1
+        past_avg = combined["volume"].rolling(5, min_periods=1).mean().shift(1)
         combined["volume_ratio"] = (
-            combined["volume"] / combined["volume"].rolling(5).mean().shift(1)
+            combined["volume"] / past_avg.fillna(combined["volume"])
         )
         ratio_map = dict(zip(combined["date"], combined["volume_ratio"]))
         df["volume_ratio"] = df["date"].map(ratio_map)
         return df
+
+    def _calc_macd(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """计算 MACD（多组参数，见 MACD_GROUPS），增量拉取时拼接库中全量 close 重算保证精确
+
+        MACD 是全局滚动指标（EMA 自首日累积），增量更新时必须用库中已有历史 close
+        作为前置；拼接后整体重算，仅把本次 df 覆盖日期对应的结果写回。
+        K线数不足该组慢线周期(slow)时，该组列置空。
+        """
+        if df.empty or "close" not in df.columns:
+            return df
+
+        from database.db import get_kline
+
+        min_date = pd.to_datetime(df["date"].min())
+        pre_end = (min_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        pre = get_kline(symbol, "1990-01-01", pre_end)
+        parts = []
+        if not pre.empty:
+            parts.append(pre[["date", "close"]])
+        parts.append(df[["date", "close"]])
+        all_close = (
+            pd.concat(parts, ignore_index=True)
+            .drop_duplicates("date", keep="last")
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        close = all_close["close"]
+        for suffix, (fast, slow, signal) in MACD_GROUPS.items():
+            if len(close) < slow:
+                df[f"macd_dif{suffix}"] = None
+                df[f"macd_dea{suffix}"] = None
+                df[f"macd_hist{suffix}"] = None
+                continue
+            ema_fast = close.ewm(span=fast, adjust=False).mean()
+            ema_slow = close.ewm(span=slow, adjust=False).mean()
+            dif = ema_fast - ema_slow
+            dea = dif.ewm(span=signal, adjust=False).mean()
+            hist = (dif - dea) * 2
+            all_close[f"macd_dif{suffix}"] = dif
+            all_close[f"macd_dea{suffix}"] = dea
+            all_close[f"macd_hist{suffix}"] = hist
+        cols = (
+            ["date"]
+            + [c for s in MACD_GROUPS for c in (f"macd_dif{s}", f"macd_dea{s}", f"macd_hist{s}")]
+        )
+        return df.merge(all_close[cols], on="date", how="left")
+
+    def _calc_tech_indicators(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """计算 MA(5/10/20/30/60/120)、RSI(14)、KDJ(9,3,3)，增量时拼接库中全量 OHLC 重算
+
+        与 _calc_macd 相同策略：滚动指标需用库中已有历史做前置，
+        拼接后整体重算，仅把本次 df 覆盖日期的结果写回。
+        MA 需 n 根K线起步；RSI(14) 用 Wilder 平滑；KDJ(9,3,3) 窗口不足时为 NULL。
+        """
+        if df.empty or "close" not in df.columns:
+            return df
+
+        from database.db import get_kline
+
+        min_date = pd.to_datetime(df["date"].min())
+        pre_end = (min_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        pre = get_kline(symbol, "1990-01-01", pre_end)
+        parts = []
+        if not pre.empty:
+            parts.append(pre[["date", "high", "low", "close"]])
+        parts.append(df[["date", "high", "low", "close"]])
+        all_ohlc = (
+            pd.concat(parts, ignore_index=True)
+            .drop_duplicates("date", keep="last")
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        close = all_ohlc["close"]
+
+        # MA：简单移动平均（前期窗口不足时用可用窗口，min_periods=1 失真补全）
+        ma_windows = (5, 10, 20, 30, 60, 120)
+        for n in ma_windows:
+            all_ohlc[f"ma{n}"] = close.rolling(n, min_periods=1).mean()
+
+        # RSI(14)：Wilder 平滑（首根及完全横盘无涨跌时失真补 50）
+        period = 14
+        delta = close.diff().fillna(0)
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - 100 / (1 + rs)
+        all_ohlc["rsi14"] = rsi.fillna(50)
+
+        # KDJ(9,3,3)：RSV -> K(1/3平滑) -> D(1/3平滑) -> J
+        # 前期窗口不足时用可用窗口(min_periods=1)；HH=LL 无波动时 RSV 补 50（失真补全）
+        low9 = all_ohlc["low"].rolling(9, min_periods=1).min()
+        high9 = all_ohlc["high"].rolling(9, min_periods=1).max()
+        rsv = ((close - low9) / (high9 - low9) * 100).fillna(50)
+        k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
+        d = k.ewm(alpha=1 / 3, adjust=False).mean()
+        all_ohlc["kdj_k"] = k
+        all_ohlc["kdj_d"] = d
+        all_ohlc["kdj_j"] = 3 * k - 2 * d
+
+        # BIAS(5,10,20)：乖离率 = (close - MA(n)) / MA(n) * 100（MA 用可用窗口）
+        for n in (5, 10, 20):
+            ma_n = close.rolling(n, min_periods=1).mean()
+            all_ohlc[f"bias{n}"] = (close - ma_n) / ma_n * 100
+
+        keep = (
+            ["date"]
+            + [f"ma{n}" for n in ma_windows]
+            + ["rsi14", "kdj_k", "kdj_d", "kdj_j", "bias5", "bias10", "bias20"]
+        )
+        return df.merge(all_ohlc[keep], on="date", how="left")
 
     def _infer_market_code(self, symbol: str) -> str:
         """根据股票代码推断交易所代码（sh/sz/bj），用于资金流向接口"""
