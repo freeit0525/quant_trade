@@ -28,26 +28,64 @@ _EM_HEADERS = {
 }
 
 
+# 东财请求会话（curl_cffi Chrome 指纹）：进程内复用连接；初始化失败时回退 requests
+_EM_SESSION = None
+_EM_SESSION_WARMED = False
+
+
+def _em_session():
+    """懒加载东财请求会话（curl_cffi impersonate=chrome，模拟浏览器 TLS/HTTP2 指纹）
+
+    Returns:
+        可用会话对象；curl_cffi 不可用/初始化失败时返回 None（调用方回退 requests）
+    """
+    global _EM_SESSION, _EM_SESSION_WARMED
+    if _EM_SESSION is not None:
+        return _EM_SESSION
+    try:
+        from curl_cffi import requests as curl_requests
+
+        s = curl_requests.Session(impersonate="chrome", timeout=15)
+        # Cookie 预热：先访问东财首页拿 cookie，降低被按"无 cookie 程序化请求"拦截的概率
+        if not _EM_SESSION_WARMED:
+            try:
+                s.get("https://quote.eastmoney.com/", timeout=8)
+            except Exception:
+                pass
+            _EM_SESSION_WARMED = True
+        _EM_SESSION = s
+        logger.info("东财请求已启用 curl_cffi Chrome 指纹会话")
+    except Exception as e:
+        logger.warning(f"curl_cffi 初始化失败，东财请求回退 requests: {e}")
+        _EM_SESSION = None
+    return _EM_SESSION
+
+
 def _em_get_with_retry(
     url: str,
     params: dict,
     retries: int = 3,
     timeout: int = 15,
     retry_interval: float = 1.0,
-) -> "requests.Response":
-    """GET 东方财富接口：完整浏览器请求头 + 失败自动重试（线性退避）
+):
+    """GET 东方财富接口：Chrome指纹(curl_cffi) + 固定Session + 浏览器头 + 失败重试
 
-    东财接口存在间歇性风控（RemoteDisconnected），单次失败不代表源不可用，
-    重试能显著提高成功率。全部重试仍失败时抛出最后一次异常。
+    - curl_cffi 模拟 Chrome 的 TLS/HTTP2 指纹，显著降低被 WAF 识别为程序化请求的概率
+    - Session 进程内复用，避免每次新建 TCP 连接
+    - 保留线性退避重试；curl_cffi 不可用时自动回退 requests
     """
     import time
 
     import requests
 
+    session = _em_session()
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
-            resp = requests.get(url, params=params, headers=_EM_HEADERS, timeout=timeout)
+            if session is not None:
+                resp = session.get(url, params=params, headers=_EM_HEADERS, timeout=timeout)
+            else:
+                resp = requests.get(url, params=params, headers=_EM_HEADERS, timeout=timeout)
             resp.raise_for_status()
             return resp
         except Exception as e:
