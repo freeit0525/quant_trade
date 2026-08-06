@@ -239,14 +239,28 @@ class DataFetcher:
         return "bj"
 
     def _fetch_fund_flow(self, symbol: str) -> pd.DataFrame:
+        """获取个股资金流向，返回标准化DataFrame（date + 5个净流入列，单位元）
+
+        优先 akshare(东方财富)，失败时回退新浪 lscjfb 接口。
+        """
+        df = self._fetch_fund_flow_via_akshare(symbol)
+        if df.empty:
+            logger.warning(f"akshare资金流向不可用，回退新浪数据源: {symbol}")
+            df = self._fetch_fund_flow_via_sina(symbol)
+        return df
+
+    def _fetch_fund_flow_via_akshare(self, symbol: str) -> pd.DataFrame:
         """通过 akshare 获取个股资金流向（近100个交易日），返回标准化DataFrame"""
-        import akshare as ak
+        try:
+            import akshare as ak
+        except ImportError:
+            return pd.DataFrame()
 
         market = self._infer_market_code(symbol)
         try:
             ff = ak.stock_individual_fund_flow(stock=symbol, market=market)
         except Exception as e:
-            logger.error(f"资金流向获取失败 {symbol}: {e}")
+            logger.warning(f"akshare资金流向获取失败 {symbol}: {e}")
             return pd.DataFrame()
 
         if ff is None or ff.empty:
@@ -268,6 +282,57 @@ class DataFetcher:
         keep = ["date", "main_net_inflow", "super_large_net_inflow",
                 "large_net_inflow", "medium_net_inflow", "small_net_inflow"]
         return ff[[c for c in keep if c in ff.columns]]
+
+    def _fetch_fund_flow_via_sina(self, symbol: str) -> pd.DataFrame:
+        """通过新浪资金流向历史接口获取分单净流入（备用数据源）
+
+        接口: MoneyFlow.ssl_qsfx_lscjfb，返回近约8年数据
+        字段映射（单位: 元）:
+            r0_net 超大单净流入, r1_net 大单, r2_net 中单, r3_net 小单
+            主力净流入 = 超大单 + 大单（r0_net + r1_net）
+        """
+        import requests
+
+        daima = f"{self._infer_market_code(symbol)}{symbol}"
+        logger.info(f"通过新浪资金流向获取 {daima} 数据...")
+        try:
+            url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_lscjfb"
+            resp = requests.get(
+                url,
+                params={"page": 1, "num": 2000, "sort": "opendate", "asc": 0, "daima": daima},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Referer": "https://finance.sina.com.cn/",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                logger.warning(f"新浪资金流向无 {daima} 数据")
+                return pd.DataFrame()
+
+            rows = []
+            for row in data:
+                try:
+                    rows.append({
+                        "date": pd.to_datetime(row["opendate"]),
+                        "main_net_inflow": float(row["r0_net"]) + float(row["r1_net"]),
+                        "super_large_net_inflow": float(row["r0_net"]),
+                        "large_net_inflow": float(row["r1_net"]),
+                        "medium_net_inflow": float(row["r2_net"]),
+                        "small_net_inflow": float(row["r3_net"]),
+                    })
+                except (KeyError, ValueError, TypeError):
+                    continue
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df = df.sort_values("date").reset_index(drop=True)
+            return df
+        except Exception as e:
+            logger.error(f"新浪资金流向获取失败: {e}")
+            return pd.DataFrame()
 
     def _merge_fund_flow(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """将资金流向按日期 left-join 合并到K线DataFrame，缺失日期对应列为 NULL"""
