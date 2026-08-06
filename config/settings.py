@@ -30,8 +30,8 @@ class DatabaseConfig:
 @dataclass
 class DataSourceConfig:
     """数据源配置"""
-    # 数据源类型：akshare 或 tushare
-    source: Literal["akshare", "tushare"] = "akshare"
+    # 数据源类型：akshare / eastmoney(直连东财) / tushare
+    source: Literal["akshare", "eastmoney", "tushare"] = "akshare"
     # tushare token（使用tushare时需要）
     tushare_token: str = ""
     # 数据缓存目录

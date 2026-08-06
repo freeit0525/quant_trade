@@ -12,6 +12,51 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 东方财富接口请求头：模拟完整浏览器指纹，降低被服务端风控按 UA 拒绝的概率
+_EM_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://quote.eastmoney.com/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+
+def _em_get_with_retry(
+    url: str,
+    params: dict,
+    retries: int = 3,
+    timeout: int = 15,
+    retry_interval: float = 1.0,
+) -> "requests.Response":
+    """GET 东方财富接口：完整浏览器请求头 + 失败自动重试（线性退避）
+
+    东财接口存在间歇性风控（RemoteDisconnected），单次失败不代表源不可用，
+    重试能显著提高成功率。全部重试仍失败时抛出最后一次异常。
+    """
+    import time
+
+    import requests
+
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, params=params, headers=_EM_HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                "东财接口请求失败(第%d/%d次): %s %s", attempt, retries, url, e
+            )
+            if attempt < retries:
+                time.sleep(retry_interval * attempt)  # 退避 1s, 2s, ...
+    assert last_exc is not None
+    raise last_exc
+
 
 class DataFetcher:
     """A股数据获取器，支持akshare数据源和本地CSV缓存"""
@@ -188,11 +233,19 @@ class DataFetcher:
         return get_kline(symbol, start_str, end_str)
 
     def _fetch_from_source(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """按配置的数据源拉取数据，akshare(东方财富)失败时回退腾讯数据源"""
+        """按配置的数据源拉取数据；东财系(akshare/eastmoney)失败时逐级回退到腾讯"""
         if self.config.source == "akshare":
             df = self._fetch_via_akshare(symbol, start_date, end_date)
             if df.empty:
-                logger.warning(f"akshare获取失败，回退腾讯数据源: {symbol}")
+                logger.warning(f"akshare获取失败，回退东财直连: {symbol}")
+                df = self._fetch_via_eastmoney(symbol, start_date, end_date)
+            if df.empty:
+                logger.warning(f"东财直连获取失败，回退腾讯数据源: {symbol}")
+                df = self._fetch_via_tencent(symbol, start_date, end_date)
+        elif self.config.source == "eastmoney":
+            df = self._fetch_via_eastmoney(symbol, start_date, end_date)
+            if df.empty:
+                logger.warning(f"东财直连获取失败，回退腾讯数据源: {symbol}")
                 df = self._fetch_via_tencent(symbol, start_date, end_date)
         elif self.config.source == "tushare":
             df = self._fetch_via_tushare(symbol, start_date, end_date)
@@ -257,12 +310,17 @@ class DataFetcher:
             return pd.DataFrame()
 
         market = self._infer_market_code(symbol)
-        try:
-            ff = ak.stock_individual_fund_flow(stock=symbol, market=market)
-        except Exception as e:
-            logger.warning(f"akshare资金流向获取失败 {symbol}: {e}")
-            return pd.DataFrame()
+        import time
 
+        ff = None
+        for attempt in range(1, 3):  # akshare内部走东财接口，无请求头控制，失败自动重试1次
+            try:
+                ff = ak.stock_individual_fund_flow(stock=symbol, market=market)
+                break
+            except Exception as e:
+                logger.warning(f"akshare资金流向获取失败 {symbol}(第{attempt}次): {e}")
+                if attempt < 2:
+                    time.sleep(1)
         if ff is None or ff.empty:
             return pd.DataFrame()
 
@@ -350,30 +408,39 @@ class DataFetcher:
         return df
 
     def _fetch_via_akshare(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """通过akshare获取数据"""
+        """通过akshare获取数据（内部走东财接口，无法注入请求头；失败自动重试1次）"""
+        import time
+
         import akshare as ak
 
         logger.info(f"通过akshare获取 {symbol} 数据...")
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=symbol,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust="qfq",  # 前复权
-            )
-            return df
-        except Exception as e:
-            logger.error(f"akshare获取数据失败: {e}")
-            return pd.DataFrame()
+        last_exc: Exception | None = None
+        for attempt in range(1, 3):
+            try:
+                df = ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq",  # 前复权
+                )
+                if df is not None and not df.empty:
+                    return df
+                last_exc = RuntimeError("akshare返回空数据")
+            except Exception as e:
+                last_exc = e
+                logger.warning(f"akshare获取 {symbol} 失败(第{attempt}次): {e}")
+            if attempt < 2:
+                time.sleep(1)
+        logger.error(f"akshare获取数据失败: {last_exc}")
+        return pd.DataFrame()
 
     def _fetch_via_eastmoney(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """直连东方财富行情接口获取前复权日K线（不依赖akshare库）
 
+        自动带浏览器请求头并失败重试（见 _em_get_with_retry），
         返回列: date/open/close/high/low/volume(股)/amount(元)/amplitude(%)/pct_change(%)/change(元)/turnover(%)
         """
-        import requests
-
         secid = f"1.{symbol}" if symbol.startswith(("6", "9")) else f"0.{symbol}"
         logger.info(f"直连东方财富获取 {secid} 数据...")
         try:
@@ -387,16 +454,7 @@ class DataFetcher:
                 "beg": start_date,
                 "end": end_date,
             }
-            resp = requests.get(
-                url,
-                params=params,
-                timeout=15,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                    "Referer": "https://quote.eastmoney.com/",
-                },
-            )
-            resp.raise_for_status()
+            resp = _em_get_with_retry(url, params=params, timeout=15)
             data = resp.json().get("data") or {}
             klines = data.get("klines") or []
             if not klines:

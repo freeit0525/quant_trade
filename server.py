@@ -253,14 +253,13 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 data = r.json().get("data", {}).get("sh600000", {})
                 ok = bool(data.get("qfqday") or data.get("day"))
             elif key == "eastmoney":
-                import requests
-                r = requests.get(
+                from data.fetcher import _em_get_with_retry
+                r = _em_get_with_retry(
                     "https://push2his.eastmoney.com/api/qt/stock/kline/get",
                     params={"secid": "1.600000", "fields1": "f1,f2,f3",
                             "fields2": "f51,f52,f53,f54,f55,f56,f57",
                             "klt": "101", "fqt": "1", "beg": "20260801", "end": "20260806"},
-                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"},
-                    timeout=8,
+                    retries=2, timeout=8,
                 )
                 ok = bool((r.json().get("data") or {}).get("klines"))
             elif key == "sina":
