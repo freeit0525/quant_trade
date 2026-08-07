@@ -113,15 +113,16 @@ def save_strategy(
     strategy_type: str,
     params: dict,
     is_active: bool = True,
+    description: str | None = None,
     config: DatabaseConfig | None = None,
 ) -> int:
     """保存策略配置，返回策略ID"""
     import json
     with db_cursor(config) as cur:
         cur.execute(
-            """INSERT INTO strategy.config (strategy_name, strategy_type, params, is_active)
-               VALUES (%s, %s, %s, %s) RETURNING id""",
-            (strategy_name, strategy_type, json.dumps(params, ensure_ascii=False), is_active),
+            """INSERT INTO backtest.strategy (strategy_name, strategy_type, params, description, is_active)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (strategy_name, strategy_type, json.dumps(params, ensure_ascii=False), description, is_active),
         )
         strategy_id = cur.fetchone()[0]
     logger.info(f"策略已保存: {strategy_name}, id={strategy_id}")
@@ -133,6 +134,7 @@ def update_strategy(
     strategy_name: str | None = None,
     params: dict | None = None,
     is_active: bool | None = None,
+    description: str | None = None,
     config: DatabaseConfig | None = None,
 ) -> None:
     """更新策略配置"""
@@ -148,12 +150,15 @@ def update_strategy(
     if is_active is not None:
         updates.append("is_active = %s")
         values.append(is_active)
+    if description is not None:
+        updates.append("description = %s")
+        values.append(description)
     updates.append("updated_at = CURRENT_TIMESTAMP")
     values.append(strategy_id)
 
     with db_cursor(config) as cur:
         cur.execute(
-            f"UPDATE strategy.config SET {', '.join(updates)} WHERE id = %s",
+            f"UPDATE backtest.strategy SET {', '.join(updates)} WHERE id = %s",
             values,
         )
     logger.info(f"策略已更新: id={strategy_id}")
@@ -165,7 +170,7 @@ def get_strategies(
 ) -> list[dict]:
     """获取所有策略配置"""
     with db_cursor(config) as cur:
-        sql = "SELECT id, strategy_name, strategy_type, params, is_active, created_at, updated_at FROM strategy.config"
+        sql = "SELECT id, strategy_name, strategy_type, params, description, is_active, created_at, updated_at FROM backtest.strategy"
         if active_only:
             sql += " WHERE is_active = TRUE"
         sql += " ORDER BY created_at DESC"
@@ -179,7 +184,7 @@ def get_strategy_by_id(strategy_id: int, config: DatabaseConfig | None = None) -
     """根据ID获取策略配置"""
     with db_cursor(config) as cur:
         cur.execute(
-            "SELECT id, strategy_name, strategy_type, params, is_active, created_at, updated_at FROM strategy.config WHERE id = %s",
+            "SELECT id, strategy_name, strategy_type, params, description, is_active, created_at, updated_at FROM backtest.strategy WHERE id = %s",
             (strategy_id,),
         )
         columns = [desc[0] for desc in cur.description]
@@ -192,7 +197,7 @@ def get_strategy_by_id(strategy_id: int, config: DatabaseConfig | None = None) -
 def delete_strategy(strategy_id: int, config: DatabaseConfig | None = None) -> None:
     """删除策略配置"""
     with db_cursor(config) as cur:
-        cur.execute("DELETE FROM strategy.config WHERE id = %s", (strategy_id,))
+        cur.execute("DELETE FROM backtest.strategy WHERE id = %s", (strategy_id,))
     logger.info(f"策略已删除: id={strategy_id}")
 
 

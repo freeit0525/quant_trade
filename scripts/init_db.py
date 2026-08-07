@@ -1,7 +1,8 @@
 """初始化 quant_trade 数据库表结构
 
 - 创建模式: market_data, backtest, portfolio, strategy
-- 创建表: daily_kline, stock_info, results, trades, nav, positions, config
+- 创建表: daily_kline, stock_info, results, trades, nav, positions, strategy
+- 策略表位于 backtest.strategy（原 strategy.config，初始化时自动迁移数据并清理旧表）
 """
 import sys
 from pathlib import Path
@@ -21,8 +22,8 @@ TABLE_COMMENTS = {
     "backtest.results": "回测结果表",
     "backtest.trades": "回测交易记录表",
     "backtest.nav": "回测每日净值表",
+    "backtest.strategy": "回测策略配置表",
     "portfolio.positions": "持仓表",
-    "strategy.config": "策略配置表",
 }
 
 COLUMN_COMMENTS = {
@@ -117,11 +118,12 @@ COLUMN_COMMENTS = {
         "created_at": "记录创建时间",
         "updated_at": "记录更新时间",
     },
-    "strategy.config": {
+    "backtest.strategy": {
         "id": "主键",
         "strategy_name": "策略名称",
         "strategy_type": "策略类型（如 macd/均线）",
         "params": "策略参数（JSON）",
+        "description": "策略描述（具体使用情况、适用场景、示例）",
         "is_active": "是否启用",
         "created_at": "记录创建时间",
         "updated_at": "记录更新时间",
@@ -142,7 +144,7 @@ def add_column_comments():
 
 def main():
     with db_cursor() as cur:
-        # 创建模式
+        # 创建模式（strategy 仅为兼容旧表 strategy.config，迁移完成后由清理逻辑删除）
         schemas = ["market_data", "backtest", "portfolio", "strategy"]
         for schema in schemas:
             cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
@@ -357,19 +359,47 @@ def main():
         """)
         print("表 portfolio.positions 创建成功")
 
-        # strategy.config - 策略配置表
+        # backtest.strategy - 策略配置表（原 strategy.config，已迁移至 backtest 模式）
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS strategy.config (
+            CREATE TABLE IF NOT EXISTS backtest.strategy (
                 id SERIAL PRIMARY KEY,
                 strategy_name VARCHAR(100) NOT NULL,
                 strategy_type VARCHAR(50) NOT NULL,
                 params JSONB NOT NULL,
+                description TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        print("表 strategy.config 创建成功")
+        # 兼容旧表结构：补充新增列（描述）
+        try:
+            cur.execute("ALTER TABLE backtest.strategy ADD COLUMN IF NOT EXISTS description TEXT")
+        except Exception:
+            pass
+        print("表 backtest.strategy 创建成功")
+
+        # 兼容旧表：迁移 strategy.config 数据到 backtest.strategy，然后清理旧表
+        cur.execute("SELECT to_regclass('strategy.config')")
+        if cur.fetchone()[0] is not None:
+            cur.execute("SELECT COUNT(*) FROM strategy.config")
+            old_cnt = cur.fetchone()[0]
+            if old_cnt:
+                cur.execute("""
+                    INSERT INTO backtest.strategy (id, strategy_name, strategy_type, params, is_active, created_at, updated_at)
+                    SELECT id, strategy_name, strategy_type, params, is_active, created_at, updated_at FROM strategy.config
+                    ON CONFLICT (id) DO NOTHING
+                """)
+                print(f"已从 strategy.config 迁移 {old_cnt} 条策略数据到 backtest.strategy")
+            cur.execute("DROP TABLE strategy.config")
+            cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'strategy'")
+            if cur.fetchone()[0] == 0:
+                cur.execute("DROP SCHEMA IF EXISTS strategy")
+                print("已删除废弃的 strategy 模式")
+            else:
+                print("strategy 模式仍含其他表，保留模式")
+        else:
+            print("未发现旧表 strategy.config，跳过迁移")
 
     # 补充表和字段注释（幂等）
     add_column_comments()

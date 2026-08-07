@@ -183,6 +183,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 "strategy_name": s["strategy_name"],
                 "strategy_type": s["strategy_type"],
                 "params": self._parse_strategy_params(s["params"]),
+                "description": s.get("description") or "",
                 "is_active": s["is_active"],
                 "created_at": s["created_at"].strftime("%Y-%m-%d %H:%M") if s.get("created_at") else "",
                 "updated_at": s["updated_at"].strftime("%Y-%m-%d %H:%M") if s.get("updated_at") else "",
@@ -191,23 +192,24 @@ class QuantHandler(SimpleHTTPRequestHandler):
         self._send_json({"data": data}, 200)
 
     def api_strategy_save(self, body: dict):
-        """保存策略：{strategy_name, strategy_type, params} → 返回 {id}"""
+        """保存策略：{strategy_name, strategy_type, params, description?} → 返回 {id}"""
         from database.db import save_strategy
 
         name = (body.get("strategy_name") or "").strip()
         stype = (body.get("strategy_type") or "").strip()
         params = body.get("params") or {}
+        description = (body.get("description") or "").strip()
         if not name:
             self._send_json({"error": "缺少参数 strategy_name"}, 400)
             return
         if not stype:
             self._send_json({"error": "缺少参数 strategy_type"}, 400)
             return
-        strategy_id = save_strategy(name, stype, params)
+        strategy_id = save_strategy(name, stype, params, description=description or None)
         self._send_json({"ok": True, "id": strategy_id, "message": f"策略「{name}」已保存"}, 200)
 
     def api_strategy_update(self, body: dict):
-        """更新策略：{id, strategy_name?, params?}"""
+        """更新策略：{id, strategy_name?, params?, description?}"""
         from database.db import update_strategy
 
         try:
@@ -217,10 +219,12 @@ class QuantHandler(SimpleHTTPRequestHandler):
             return
         name = (body.get("strategy_name") or "").strip()
         params = body.get("params")
+        description = body.get("description")
         update_strategy(
             strategy_id,
             strategy_name=name or None,
             params=params if params is not None else None,
+            description=description.strip() if isinstance(description, str) and description.strip() else None,
         )
         self._send_json({"ok": True, "message": "策略已更新"}, 200)
 
