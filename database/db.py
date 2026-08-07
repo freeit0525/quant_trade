@@ -1,5 +1,6 @@
 """数据库 CRUD 模块 - 策略、回测结果、交易记录、净值的读写"""
 
+import math
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -430,6 +431,11 @@ def get_kline(
         return pd.DataFrame()
     df = pd.DataFrame(rows, columns=columns)
     df["date"] = pd.to_datetime(df["date"])
+    # psycopg2 将 NUMERIC 列返回为 decimal.Decimal，pandas 3.x 不再自动转 float，
+    # 统一转数值避免下游指标计算时 Decimal 与 float 混合运算报错
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
@@ -451,9 +457,13 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return None
         try:
-            return cast(v)
+            v = cast(v)
         except (ValueError, TypeError):
             return None
+        # PostgreSQL numeric 不支持 inf/nan（除零等产生的非有限值），统一转 NULL
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+        return v
 
     rows = []
     for _, row in df.iterrows():

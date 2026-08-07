@@ -473,12 +473,16 @@ class QuantHandler(SimpleHTTPRequestHandler):
 
     def _send_json(self, obj: dict, status: int = 200):
         body = json.dumps(obj, ensure_ascii=False, default=_json_default).encode("utf-8")
-        self.send_response(status)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            # 客户端提前断开（如全量拉取耗时较长时刷新/关闭页面）：业务数据已入库，忽略响应写失败
+            logger.warning("客户端断开，响应未送达 %s: %s", self.path, e)
 
     def log_message(self, fmt, *args):
         logger.info("%s - %s", self.address_string(), fmt % args)

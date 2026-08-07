@@ -453,9 +453,9 @@ class DataFetcher:
         # 过去N日均量（不含当日，窗口随前期数据逐步扩大，min_periods=1），
         # 首日无前一日均量时用当日量兜底 -> 量比=1
         past_avg = combined["volume"].rolling(5, min_periods=1).mean().shift(1)
-        combined["volume_ratio"] = (
-            combined["volume"] / past_avg.fillna(combined["volume"])
-        )
+        # 分母为 0（停牌日窗口均量为 0）时置 NaN，避免产生 inf 导致入库溢出
+        denom = past_avg.fillna(combined["volume"]).replace(0, float("nan"))
+        combined["volume_ratio"] = combined["volume"] / denom
         ratio_map = dict(zip(combined["date"], combined["volume_ratio"]))
         df["volume_ratio"] = df["date"].map(ratio_map)
         return df
@@ -633,7 +633,8 @@ class DataFetcher:
     def _fetch_fund_flow_via_sina(self, symbol: str) -> pd.DataFrame:
         """通过新浪资金流向历史接口获取分单净流入（备用数据源）
 
-        接口: MoneyFlow.ssl_qsfx_lscjfb，返回近约8年数据
+        接口: MoneyFlow.ssl_qsfx_lscjfb，num=10000 时返回上市至今全量历史
+        （实测 002407 返回 3944 条覆盖 2010 至今；num=2000 只能取近约 8 年）
         字段映射（单位: 元）:
             r0_net 超大单净流入, r1_net 大单, r2_net 中单, r3_net 小单
             主力净流入 = 超大单 + 大单（r0_net + r1_net）
@@ -646,7 +647,7 @@ class DataFetcher:
             url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_lscjfb"
             resp = requests.get(
                 url,
-                params={"page": 1, "num": 2000, "sort": "opendate", "asc": 0, "daima": daima},
+                params={"page": 1, "num": 10000, "sort": "opendate", "asc": 0, "daima": daima},
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                     "Referer": "https://finance.sina.com.cn/",
@@ -819,7 +820,8 @@ class DataFetcher:
         for c in ("open", "high", "low", "close", "preclose", "volume", "amount", "turn", "pctChg"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
         df["change"] = df["close"] - df["preclose"]
-        df["amplitude"] = (df["high"] - df["low"]) / df["preclose"] * 100
+        # preclose 为 0（如新股首日）时置 NaN，避免振幅出现 inf 导致入库溢出
+        df["amplitude"] = (df["high"] - df["low"]) / df["preclose"].replace(0, float("nan")) * 100
         df = df.rename(columns={"pctChg": "pct_change", "turn": "turnover"})
         keep = ["date", "open", "close", "high", "low", "volume", "amount",
                 "amplitude", "pct_change", "change", "turnover"]
