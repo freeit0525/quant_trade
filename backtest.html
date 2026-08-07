@@ -421,38 +421,7 @@
     <div class="actions" style="margin-top:14px">
       <button onclick="runBacktest()">运行回测</button>
       <button class="secondary" onclick="resetStrategyParams()">恢复全部默认参数</button>
-    </div>
-  </div>
-
-  <!-- 策略表：保存/加载/删除已保存的策略配置 -->
-  <div class="panel">
-    <h2>策略表（保存/加载策略）</h2>
-    <div class="row" style="align-items:flex-end;">
-      <div class="field" style="flex:0 0 280px;">
-        <label>策略名称</label>
-        <input type="text" id="strategyNameInput" placeholder="如：放量突破-短线" maxlength="100">
-      </div>
-      <div class="actions" style="margin:0;">
-        <button onclick="saveCurrentStrategy()">保存当前策略</button>
-        <button class="secondary" onclick="loadStrategies()">刷新列表</button>
-      </div>
-    </div>
-    <div class="field" style="margin-top:8px;">
-      <label>策略描述（具体使用情况，可附示例）
-        <button class="secondary" style="padding:1px 10px;font-size:12px;margin-left:8px;" onclick="autofillStrategyDescription()">按当前策略生成示例描述</button>
-      </label>
-      <textarea id="strategyDescInput" rows="3" placeholder="例如：放量突破策略，适用于趋势启动阶段。当收盘价放量突破前20日最高价且成交量&gt;1.5倍5日均量时买入，放量跌破前低卖出。示例：股价横盘整理后放量突破平台，配合止损3%使用。"></textarea>
-    </div>
-    <div class="hint" style="margin-top:6px;">保存会把当前预设策略类型、MACD参数、资金仓位、信号增强、量能参数、手续费、描述等全部配置存入数据库 backtest.strategy 表。</div>
-    <div id="strategyTableWrap" style="margin-top:10px;">
-      <table>
-        <thead>
-          <tr><th>ID</th><th>策略名称</th><th>类型</th><th>参数摘要</th><th>描述</th><th>更新时间</th><th style="text-align:center">操作</th></tr>
-        </thead>
-        <tbody id="strategyTableBody">
-          <tr><td colspan="7" style="text-align:center;color:#999;">正在加载已保存的策略...</td></tr>
-        </tbody>
-      </table>
+      <button class="secondary" onclick="window.location.href='strategy.html'">策略管理 →</button>
     </div>
   </div>
 
@@ -1306,7 +1275,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
   const equity = new Array(n); // 每日总权益
 
   // ===== 波段（完整交易循环：建仓→清仓）跟踪 =====
-  // cycle: { startIdx, startDate, buyAmount(含费总投入), buyGross(不含费), buyShares, sellAmount(净收回), lastSellPrice }
+  // cycle: { startIdx, startDate, buyAmount(含费总投入), buyGross(不含费), buyShares, sellAmount(净收回), lastSellPrice, firstTradeIdx(波段内首笔交易索引) }
   let cycle = null;
   const cycles = [];        // 每个已完成/持仓中的波段记录
 
@@ -1318,6 +1287,12 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
     const pnlNet = isOpen
       ? cycle.sellAmount + shares * close - cycle.buyAmount
       : cycle.sellAmount - cycle.buyAmount;
+    // 汇总波段内所有交易：股数、买入/卖出成交额、手续费、剩余现金
+    const bandTrades = trades.slice(cycle.firstTradeIdx);
+    const buyGross = bandTrades.filter(t => t.type === 'buy').reduce((s, t) => s + t.amount, 0);
+    const sellGross = bandTrades.filter(t => t.type === 'sell').reduce((s, t) => s + t.amount, 0);
+    const bandFee = bandTrades.reduce((s, t) => s + t.fee, 0);
+    const lastTrade = bandTrades[bandTrades.length - 1];
     cycles.push({
       startDate: cycle.startDate,
       endDate,
@@ -1328,7 +1303,14 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
       pnl: pnlNet,
       returnPct: cycle.buyAmount > 0 ? pnlNet / cycle.buyAmount : 0,
       reason,
-      open: isOpen
+      open: isOpen,
+      // 汇总字段
+      tradeCount: bandTrades.length,
+      buyGross,       // 买入成交额（不含费）
+      sellGross,      // 卖出成交额（不含费）
+      turnover: buyGross + sellGross,   // 总成交额
+      fee: bandFee,   // 波段内总手续费
+      cashAfter: lastTrade ? lastTrade.cashAfter : null   // 波段结束后的剩余现金
     });
     cycle = null;
   };
@@ -1423,7 +1405,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
             lastBuyIdx = i;
             if (adds === 1) {
               // 首个买入：开启新波段
-              cycle = { startIdx: i, startDate: k.date, buyAmount: 0, buyGross: 0, buyShares: 0, sellAmount: 0, lastSellPrice: null };
+              cycle = { startIdx: i, startDate: k.date, buyAmount: 0, buyGross: 0, buyShares: 0, sellAmount: 0, lastSellPrice: null, firstTradeIdx: trades.length };
             }
             cycle.buyAmount += totalCost;
             cycle.buyGross += gross;
@@ -2079,7 +2061,7 @@ function resetStrategyParams() {
   document.getElementById('transferFee').value = 0.1;
 }
 
-function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
+function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.color = ''; el.style.display = 'block'; }
 function clearError() { document.getElementById('errorMsg').style.display = 'none'; }
 
 // ============ 运行回测 ============
@@ -2141,163 +2123,7 @@ function getStrategyParams() {
   };
 }
 
-// ============ 策略表（保存/加载策略） ============
-const STRATEGY_TYPE_LABEL = {
-  rate: 'MACD速率', cross: 'MACD金叉', bar: 'MACD柱', triple: '三指标共振', macdRsi: 'MACD+RSI',
-  macdKdj: 'MACD+KDJ', kdjBottom: 'KDJ抄底', rsiKdjBottom: 'RSI+KDJ双底', kdjRsiOverSell: 'KDJ+RSI超卖',
-  rsiKdjDual: 'RSI+KDJ双确认', kdjJ: 'KDJ-J极值', rsiDual: 'RSI双线', rsiDivergence: 'RSI背离',
-  bollBreak: '布林带突破', bias: 'BIAS乖离', volBreakout: '放量突破', volPullback: '缩量回调',
-  volRatio: '量比异动', obv: 'OBV能量潮', vwap: 'VWAP', volShrink: '地量见地价',
-  volDivergence: '量价背离', vr: 'VR变异率'
-};
-
-// 收集当前页面所有配置为可持久化的 params
-function collectStrategyParams() {
-  const p = getParams();
-  const sp = getStrategyParams();
-  return {
-    strategy: document.getElementById('strategySelect').value,
-    macd: { fast: p.fast, slow: p.slow, signal: p.signal },
-    sp: sp
-  };
-}
-
-// 生成策略参数摘要文本（表格展示用）
-function strategySummary(params) {
-  const p = params || {};
-  const sp = p.sp || {};
-  const macd = p.macd || {};
-  const vp = sp.volParams || {};
-  const parts = [];
-  if (macd.fast) parts.push(`MACD(${macd.fast},${macd.slow},${macd.signal})`);
-  if (sp.positionRatio) parts.push(`仓位${(sp.positionRatio * 100).toFixed(0)}%`);
-  if (sp.takeProfit) parts.push(`止盈${sp.takeProfit}%`);
-  if (sp.stopLoss) parts.push(`止损${sp.stopLoss}%`);
-  const filters = [];
-  if (sp.flatFilter && sp.flatFilter.enabled) filters.push('横盘');
-  if (sp.fastSell && sp.fastSell.enabled) filters.push('快卖');
-  if (sp.ma5Sell && sp.ma5Sell.enabled) filters.push('MA5');
-  if (sp.buyStrength && sp.buyStrength.enabled) filters.push('强度');
-  if (sp.trendFilter && sp.trendFilter.enabled) filters.push('趋势');
-  if (filters.length) parts.push(`过滤:${filters.join('/')}`);
-  if (vp.volN) parts.push(`量能N${vp.volN}/倍${vp.volMult}`);
-  return parts.join(' | ') || '默认';
-}
-
-function showStrategyError(msg) {
-  const el = document.getElementById('strategyNameInput');
-  const hint = document.createElement('div');
-  hint.className = 'error';
-  hint.style.display = 'block';
-  hint.style.color = '#e8453c';
-  hint.style.fontSize = '12px';
-  hint.style.marginTop = '4px';
-  hint.id = 'strategyErr';
-  const old = document.getElementById('strategyErr');
-  if (old) old.remove();
-  if (el && el.parentElement) el.parentElement.appendChild(hint);
-  hint.textContent = msg;
-}
-
-// 保存当前配置为策略
-async function saveCurrentStrategy() {
-  const name = (document.getElementById('strategyNameInput').value || '').trim();
-  if (!name) { showStrategyError('请先填写策略名称'); return; }
-  const params = collectStrategyParams();
-  const description = (document.getElementById('strategyDescInput').value || '').trim();
-  try {
-    const res = await fetch(`${API_BASE}/api/strategy/save`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ strategy_name: name, strategy_type: params.strategy, params: params, description: description })
-    });
-    const data = await res.json();
-    if (data.error) { showStrategyError(data.error); return; }
-    document.getElementById('strategyNameInput').value = '';
-    loadStrategies();
-    showStrategyError(data.message || '已保存');
-    document.getElementById('strategyErr').style.color = '#34a853';
-  } catch (e) {
-    showStrategyError('保存失败: ' + e.message);
-  }
-}
-
-// 根据当前策略类型生成示例描述（具体使用情况 + 示例）
-function buildStrategyDescription() {
-  const st = document.getElementById('strategySelect').value;
-  const name = STRATEGY_TYPE_LABEL[st] || st;
-  const sp = getStrategyParams();
-  const vp = sp.volParams || {};
-  const descMap = {
-    rate: `MACD速率策略：当MACD柱状线向上加速（速率为正且加速）时买入，利用动能拐点捕捉主升浪。示例：股价回调后MACD红柱重新放大买入，配合止损${sp.stopLoss}%、止盈${sp.takeProfit}%使用。`,
-    cross: `MACD金叉策略：DIF上穿DEA形成金叉买入，死叉卖出，属于经典趋势跟随。示例：周线级别金叉且股价站上MA20时买入，适合中期波段。`,
-    bar: `MACD柱策略：红柱持续放大买入，绿柱转红柱是启动信号。示例：DIF在零轴上方二次金叉（空中加油）买入，胜率相对更高。`,
-    triple: `三指标共振策略：MACD金叉+RSI回升+KDJ金叉同时满足才买入，过滤单指标假信号。示例：三指标同一天共振买入，震荡市中效果更好。`,
-    macdRsi: `MACD+RSI组合：MACD金叉且RSI脱离超卖区（>30回升）买入。示例：RSI从超卖区回升至40以上且MACD金叉时买入。`,
-    macdKdj: `MACD+KDJ组合：MACD金叉且KDJ金叉买入，双指标确认。示例：KDJ在20以下金叉同时MACD零轴下金叉，反弹信号更强。`,
-    kdjBottom: `KDJ抄底策略：KDJ的J值跌破0（超卖）后回升买入。示例：连续下跌后J值进入负值区间再上穿0轴，短线反弹概率高。`,
-    rsiKdjBottom: `RSI+KDJ双底策略：RSI与KDJ同时超卖且双双回升买入。示例：RSI<20且KDJ<20后同时拐头向上时买入。`,
-    kdjRsiOverSell: `KDJ+RSI超卖策略：两者均处于超卖区且开始反弹买入。示例：RSI<30、KDJ<20且当日收阳时买入，反弹思路。`,
-    rsiKdjDual: `RSI+KDJ双确认：RSI金叉与KDJ金叉同时出现才买入。示例：双金叉且成交量温和放大时买入，信号更可靠。`,
-    kdjJ: `KDJ-J极值策略：J值>100（超买）卖出或J值<0（超卖）买入。示例：J值跌破-10后回升买入，短线反弹博弈。`,
-    rsiDual: `RSI双线策略：RSI快线上穿慢线买入，下穿卖出。示例：RSI6上穿RSI12且位置在50以上时买入，顺势操作。`,
-    rsiDivergence: `RSI背离策略：价格创新低但RSI未创新低（底背离）买入。示例：股价新低而RSI抬升，主力资金悄悄吸筹的信号。`,
-    bollBreak: `布林带突破策略：股价跌破下轨后回升买入（超跌反弹），突破上轨后回落卖出（超买）。示例：股价跌破下轨2日重新站回下轨时买入。`,
-    bias: `BIAS乖离策略：乖离率过大（<-5%）超卖买入，过大正值（>5%）超买卖出。示例：连续暴跌后BIAS6<-6%时买入，博取均值回归。`,
-    volBreakout: `放量突破策略：收盘价放量突破前${vp.volBreakN}日最高价（量>${vp.volMult}倍${vp.volN}日均量）买入，放量跌破前低卖出。示例：横盘整理后放量突破平台，配合止损${sp.stopLoss}%使用。`,
-    volPullback: `缩量回调策略：上升趋势中回调缩量（量<${vp.shrinkMult}倍均量）买入，属趋势中低吸。示例：沿MA20上涨的股票回调至MA5下方且缩量时买入。`,
-    volRatio: `量比异动策略：量比≥${vp.volRatioBuy}且收阳买入（资金进场），放量收阴卖出（资金出逃）。示例：早盘量比突然放大且价格拉升时买入。`,
-    obv: `OBV能量潮策略：OBV创前${vp.volBreakN}日新高买入（资金持续流入），创新低卖出。示例：股价横盘但OBV创新高，主力暗中吸筹时买入。`,
-    vwap: `VWAP量价均价策略：收盘价上穿VWAP买入（多头占优），下穿卖出。示例：日内价格站上VWAP且量能配合时买入，机构常用作多空分界。`,
-    volShrink: `地量见地价策略：成交量萎缩至${vp.shrinkMult}倍均量以下（地量）且收阳买入，放量收阴卖出。示例：连续缩量后出现地量并收阳，抛压枯竭时抄底。`,
-    volDivergence: `量价背离策略：价格创新低但成交量未创新低（底背离）买入；价格创新高但量能未同步放大（顶背离）卖出。示例：股价新低而量能未创新低，资金承接时买入。`,
-    vr: `VR成交量变异率策略：VR从低位区（<${vp.vrBuyThr}）上穿买入，从高位区（>${vp.vrSellThr}）下穿卖出。示例：VR跌至低位后回升，情绪冰点反转时买入。`
-  };
-  return descMap[st] || `${name}策略：按预设信号买入、卖出。示例：设置止损${sp.stopLoss}%、止盈${sp.takeProfit}%、仓位${(sp.positionRatio * 100).toFixed(0)}%后运行回测对比。`;
-}
-
-// 自动生成示例描述到输入框
-function autofillStrategyDescription() {
-  document.getElementById('strategyDescInput').value = buildStrategyDescription();
-  showStrategyError('已按当前策略类型生成示例描述，可手动修改');
-  document.getElementById('strategyErr').style.color = '#34a853';
-}
-
-// 加载已保存的策略列表到表格
-async function loadStrategies() {
-  const body = document.getElementById('strategyTableBody');
-  try {
-    const res = await fetch(`${API_BASE}/api/strategies`);
-    const data = await res.json();
-    if (data.error) { body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#e8453c;">${data.error}</td></tr>`; return; }
-    const list = data.data || [];
-    if (list.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">暂无已保存的策略，填写名称后点击「保存当前策略」</td></tr>';
-      return;
-    }
-    body.innerHTML = list.map(s => {
-      const label = STRATEGY_TYPE_LABEL[s.strategy_type] || s.strategy_type;
-      const desc = (s.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `
-        <tr>
-          <td>${s.id}</td>
-          <td style="text-align:left;font-weight:600;">${s.strategy_name}</td>
-          <td>${label}</td>
-          <td style="text-align:left;font-size:11px;">${strategySummary(s.params)}</td>
-          <td style="text-align:left;font-size:11px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${desc}">${desc || '<span style="color:#999;">-</span>'}</td>
-          <td>${s.updated_at || s.created_at || ''}</td>
-          <td style="text-align:center;white-space:nowrap;">
-            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="loadStrategy(${s.id})">加载</button>
-            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="updateStrategy(${s.id})">更新</button>
-            <button class="secondary" style="padding:3px 10px;font-size:12px;color:#e8453c;border-color:#e8453c;" onclick="deleteStrategy(${s.id})">删除</button>
-          </td>
-        </tr>`;
-    }).join('');
-  } catch (e) {
-    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#e8453c;">加载策略列表失败（请确认已运行 python server.py）: ${e.message}</td></tr>`;
-  }
-}
-
+// ============ 从策略管理页加载策略（URL 参数 ?load=ID） ============
 // 根据 DOM id 设置表单值（自动识别 checkbox）
 function setFormField(id, value) {
   const el = document.getElementById(id);
@@ -2361,60 +2187,21 @@ function applyStrategyParams(params) {
   }
 }
 
-// 加载策略到表单（覆盖当前参数）
-async function loadStrategy(id) {
+// 从策略管理页跳转进入时（backtest.html?load=ID），加载策略参数到表单
+async function loadStrategyFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get('load');
+  if (!id) return;
   try {
     const res = await fetch(`${API_BASE}/api/strategies`);
     const data = await res.json();
-    const item = (data.data || []).find(s => s.id === id);
-    if (!item) { showStrategyError('未找到该策略'); return; }
+    const item = (data.data || []).find(s => s.id === parseInt(id));
+    if (!item) { showError(`未找到策略 id=${id}`); return; }
     applyStrategyParams(item.params);
-    document.getElementById('strategyNameInput').value = item.strategy_name;
-    document.getElementById('strategyDescInput').value = item.description || '';
-    showStrategyError(`已加载策略「${item.strategy_name}」，参数与描述已填入表单`);
-    document.getElementById('strategyErr').style.color = '#34a853';
+    showError(`已加载策略「${item.strategy_name}」，参数已填入表单，请拉取数据后运行回测`);
+    document.getElementById('errorMsg').style.color = '#34a853';
   } catch (e) {
-    showStrategyError('加载失败: ' + e.message);
-  }
-}
-
-// 用当前表单参数覆盖更新已有策略
-async function updateStrategy(id) {
-  const name = (document.getElementById('strategyNameInput').value || '').trim();
-  const params = collectStrategyParams();
-  const description = (document.getElementById('strategyDescInput').value || '').trim();
-  try {
-    const res = await fetch(`${API_BASE}/api/strategy/update`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id, strategy_name: name || undefined, params: params, description: description || undefined })
-    });
-    const data = await res.json();
-    if (data.error) { showStrategyError(data.error); return; }
-    loadStrategies();
-    showStrategyError('策略已更新');
-    document.getElementById('strategyErr').style.color = '#34a853';
-  } catch (e) {
-    showStrategyError('更新失败: ' + e.message);
-  }
-}
-
-// 删除策略
-async function deleteStrategy(id) {
-  if (!confirm('确定删除该策略？')) return;
-  try {
-    const res = await fetch(`${API_BASE}/api/strategy/delete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id })
-    });
-    const data = await res.json();
-    if (data.error) { showStrategyError(data.error); return; }
-    loadStrategies();
-    showStrategyError('策略已删除');
-    document.getElementById('strategyErr').style.color = '#34a853';
-  } catch (e) {
-    showStrategyError('删除失败: ' + e.message);
+    showError('加载策略失败: ' + e.message);
   }
 }
 
@@ -2588,7 +2375,7 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
         <summary>波段收益明细（共 ${cycles.length} 个波段，已平仓 ${cycles.filter(c => !c.open).length} 个）</summary>
         <table>
           <thead>
-            <tr><th>#</th><th>建仓日期</th><th>清仓日期</th><th>持仓天数</th><th>买入均价</th><th>卖出价</th><th>净盈亏</th><th>收益率</th><th>结果</th><th>清仓原因</th></tr>
+            <tr><th>#</th><th>建仓日期</th><th>清仓日期</th><th>持仓天数</th><th>买入均价</th><th>卖出价</th><th>股数</th><th>成交额</th><th>手续费</th><th>剩余现金</th><th>净盈亏</th><th>收益率</th><th>结果</th><th>清仓原因</th></tr>
           </thead>
           <tbody>
             ${cycles.map((c, i) => {
@@ -2602,35 +2389,16 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
                 <td>${c.holdDays}</td>
                 <td>${fmt(c.avgBuyPrice)}</td>
                 <td>${fmt(c.sellPrice)}</td>
+                <td>${c.buyShares}</td>
+                <td>${fmtMoney(c.turnover)}</td>
+                <td style="color:#ff9800">${fmt(c.fee)}</td>
+                <td>${c.cashAfter != null ? fmtMoney(c.cashAfter) : '-'}</td>
                 <td class="${cls}">${c.pnl >= 0 ? '+' : '-'}${fmtMoney(Math.abs(c.pnl))}</td>
                 <td class="${cls}">${fmtPct(c.returnPct)}</td>
                 <td class="${cls}" style="font-weight:600">${label}</td>
                 <td style="text-align:left">${c.reason}</td>
               </tr>`;
             }).join('')}
-          </tbody>
-        </table>
-      </details>
-
-      <details>
-        <summary>交易明细（共 ${trades.length} 笔，点击展开）</summary>
-        <table>
-          <thead>
-            <tr><th>日期</th><th>类型</th><th>价格</th><th>股数</th><th>成交额</th><th>手续费</th><th>剩余现金</th><th>原因</th></tr>
-          </thead>
-          <tbody>
-            ${trades.map(t => `
-              <tr class="${t.type}">
-                <td>${t.date}</td>
-                <td style="color:${t.type === 'buy' ? '#34a853' : '#e8453c'};font-weight:600">${t.type === 'buy' ? '买入' : '卖出'}</td>
-                <td>${fmt(t.price)}</td>
-                <td>${t.shares}</td>
-                <td>${fmtMoney(t.amount)}</td>
-                <td style="color:#ff9800">${fmt(t.fee)}</td>
-                <td>${fmtMoney(t.cashAfter)}</td>
-                <td style="text-align:left">${t.reason}</td>
-              </tr>
-            `).join('')}
           </tbody>
         </table>
       </details>
@@ -2649,8 +2417,8 @@ updateStrategyDesc();
 // ============ 页面初始化 ============
 // 加载本地库 stock_info 股票目录（下拉+输入联想）
 loadStockCatalog();
-// 加载已保存的策略列表（策略表）
-loadStrategies();
+// 从策略管理页跳转进入时（?load=ID）自动加载策略参数
+loadStrategyFromUrl();
 (function initRangeUI() {
   // 时间段模式默认值：起始=2年前，结束=今天（与「最近2年」对齐）
   const today = new Date();

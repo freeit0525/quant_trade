@@ -221,22 +221,24 @@ def save_backtest_result(
     total_trades: int = 0,
     trading_days: int = 0,
     total_commission: float = 0.0,
-    total_stamp_tax: float = 0.0,
+    strategy_id: int | None = None,
     config: DatabaseConfig | None = None,
 ) -> int:
-    """保存回测结果，返回结果ID"""
+    """保存回测结果，返回结果ID（strategy_id 关联 backtest.strategy）"""
     import json
     with db_cursor(config) as cur:
         cur.execute(
             """INSERT INTO backtest.results
-               (strategy_name, symbol, start_date, end_date, initial_capital, final_capital,
-                total_return, annual_return, max_drawdown, sharpe_ratio, params)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               (strategy_id, strategy_name, symbol, start_date, end_date, initial_capital, final_capital,
+                total_return, annual_return, max_drawdown, sharpe_ratio, win_rate,
+                total_trades, trading_days, total_commission, params)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
-                strategy_name, symbol, start_date, end_date,
+                strategy_id, strategy_name, symbol, start_date, end_date,
                 initial_capital, final_capital,
                 total_return, annual_return, max_drawdown, sharpe_ratio,
+                win_rate, total_trades, trading_days, total_commission,
                 json.dumps(params, ensure_ascii=False) if params else None,
             ),
         )
@@ -247,17 +249,26 @@ def save_backtest_result(
 
 def get_backtest_results(
     limit: int = 50,
+    strategy_id: int | None = None,
     config: DatabaseConfig | None = None,
 ) -> list[dict]:
-    """获取回测结果列表"""
+    """获取回测结果列表（可按策略ID过滤）"""
     with db_cursor(config) as cur:
-        cur.execute(
-            """SELECT id, strategy_name, symbol, start_date, end_date,
-                      initial_capital, final_capital, total_return, annual_return,
-                      max_drawdown, sharpe_ratio, params, created_at
-               FROM backtest.results ORDER BY created_at DESC LIMIT %s""",
-            (limit,),
-        )
+        sql = """SELECT id, strategy_id, strategy_name, symbol, start_date, end_date,
+                        initial_capital, final_capital, total_return, annual_return,
+                        max_drawdown, sharpe_ratio, win_rate, total_trades, trading_days,
+                        total_commission, params, created_at
+                 FROM backtest.results"""
+        conditions = []
+        values = []
+        if strategy_id is not None:
+            conditions.append("strategy_id = %s")
+            values.append(strategy_id)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY created_at DESC LIMIT %s"
+        values.append(limit)
+        cur.execute(sql, values)
         columns = [desc[0] for desc in cur.description]
         rows = cur.fetchall()
     return [dict(zip(columns, row)) for row in rows]
@@ -267,9 +278,10 @@ def get_backtest_result_by_id(result_id: int, config: DatabaseConfig | None = No
     """根据ID获取回测结果"""
     with db_cursor(config) as cur:
         cur.execute(
-            """SELECT id, strategy_name, symbol, start_date, end_date,
+            """SELECT id, strategy_id, strategy_name, symbol, start_date, end_date,
                       initial_capital, final_capital, total_return, annual_return,
-                      max_drawdown, sharpe_ratio, params, created_at
+                      max_drawdown, sharpe_ratio, win_rate, total_trades, trading_days,
+                      total_commission, params, created_at
                FROM backtest.results WHERE id = %s""",
             (result_id,),
         )

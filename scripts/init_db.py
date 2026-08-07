@@ -75,6 +75,7 @@ COLUMN_COMMENTS = {
     },
     "backtest.results": {
         "id": "主键",
+        "strategy_id": "关联策略ID（backtest.strategy.id，外键）",
         "strategy_name": "策略名称",
         "symbol": "回测股票代码",
         "start_date": "回测开始日期",
@@ -85,6 +86,10 @@ COLUMN_COMMENTS = {
         "annual_return": "年化收益率",
         "max_drawdown": "最大回撤",
         "sharpe_ratio": "夏普比率",
+        "win_rate": "胜率（按波段）",
+        "total_trades": "总交易笔数",
+        "trading_days": "回测交易日数",
+        "total_commission": "总手续费（元）",
         "params": "策略参数（JSON）",
         "created_at": "记录创建时间",
     },
@@ -298,6 +303,7 @@ def main():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS backtest.results (
                 id SERIAL PRIMARY KEY,
+                strategy_id INTEGER REFERENCES backtest.strategy(id) ON DELETE SET NULL,
                 strategy_name VARCHAR(100) NOT NULL,
                 symbol VARCHAR(20) NOT NULL,
                 start_date DATE NOT NULL,
@@ -308,10 +314,23 @@ def main():
                 annual_return NUMERIC(12,6),
                 max_drawdown NUMERIC(12,6),
                 sharpe_ratio NUMERIC(12,6),
+                win_rate NUMERIC(12,6),
+                total_trades INTEGER,
+                trading_days INTEGER,
+                total_commission NUMERIC(20,4),
                 params JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # 兼容旧表结构：补充新增列
+        try:
+            cur.execute("ALTER TABLE backtest.results ADD COLUMN IF NOT EXISTS strategy_id INTEGER REFERENCES backtest.strategy(id) ON DELETE SET NULL")
+            cur.execute("ALTER TABLE backtest.results ADD COLUMN IF NOT EXISTS win_rate NUMERIC(12,6)")
+            cur.execute("ALTER TABLE backtest.results ADD COLUMN IF NOT EXISTS total_trades INTEGER")
+            cur.execute("ALTER TABLE backtest.results ADD COLUMN IF NOT EXISTS trading_days INTEGER")
+            cur.execute("ALTER TABLE backtest.results ADD COLUMN IF NOT EXISTS total_commission NUMERIC(20,4)")
+        except Exception:
+            pass
         print("表 backtest.results 创建成功")
 
         # backtest.trades - 回测交易记录表

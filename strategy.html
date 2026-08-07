@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>策略管理</title>
+  <style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .field { flex: 1; min-width: 140px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+  input, textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #1a73e8; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid #e0e0e0;
+    padding: 8px 10px;
+    text-align: center;
+  }
+  th { background: #f8f9fa; color: #555; font-weight: 600; white-space: nowrap; }
+  td { vertical-align: middle; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+  .hint { font-size: 12px; color: #999; }
+  /* 模态框 */
+  .modal-mask {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 8px;
+    width: 640px;
+    max-width: 92vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 20px;
+  }
+  .modal h3 { font-size: 16px; color: #444; margin-bottom: 12px; }
+  .modal .row { margin-bottom: 10px; }
+  .modal textarea { min-height: 120px; font-family: Consolas, Monaco, monospace; font-size: 12px; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  .empty { color: #999; padding: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <h1>策略管理</h1>
+    <div style="display:flex;gap:14px;">
+      <a class="back" href="backtest.html">回测工具 →</a>
+      <a class="back" href="index.html">← 返回入口</a>
+    </div>
+  </div>
+  <div class="subtitle">管理已保存的回测策略（存储于数据库 backtest.strategy 表）。「加载到回测」会把策略参数带入回测页面。</div>
+
+  <div class="panel">
+    <div class="row" style="align-items:center;justify-content:space-between;">
+      <h2 style="margin:0;">已保存策略</h2>
+      <div style="display:flex;gap:10px;">
+        <button onclick="openCreateModal()">新建策略</button>
+        <button class="secondary" onclick="loadStrategies()">刷新列表</button>
+      </div>
+    </div>
+    <div id="strategyTableWrap" style="margin-top:12px;">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>策略名称</th><th>类型</th><th>参数摘要</th><th>描述</th><th>更新时间</th><th style="text-align:center">操作</th></tr>
+        </thead>
+        <tbody id="strategyTableBody">
+          <tr><td colspan="7" style="text-align:center;color:#999;">正在加载已保存的策略...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="pageMsg" class="error"></div>
+  </div>
+</div>
+
+<!-- 新建/编辑策略模态框 -->
+<div class="modal-mask" id="strategyModal">
+  <div class="modal">
+    <h3 id="modalTitle">新建策略</h3>
+    <input type="hidden" id="editId">
+    <div class="row">
+      <div class="field">
+        <label>策略名称</label>
+        <input type="text" id="formName" maxlength="100" placeholder="如：放量突破-短线">
+      </div>
+      <div class="field">
+        <label>策略类型</label>
+        <select id="formType"></select>
+      </div>
+    </div>
+    <div class="field">
+      <label>策略描述（具体使用情况，可附示例）
+        <button class="secondary" style="padding:1px 10px;font-size:12px;margin-left:8px;" onclick="fillExampleDesc()">按类型生成示例描述</button>
+      </label>
+      <textarea id="formDesc" rows="3" placeholder="例如：放量突破策略，适用于趋势启动阶段。当收盘价放量突破前20日最高价且成交量&gt;1.5倍5日均量时买入，放量跌破前低卖出。示例：股价横盘整理后放量突破平台，配合止损3%使用。"></textarea>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>策略参数（JSON，含 strategy/macd/sp 结构）
+        <button class="secondary" style="padding:1px 10px;font-size:12px;margin-left:8px;" onclick="fillExampleParams()">按类型生成示例参数</button>
+      </label>
+      <textarea id="formParams" rows="10" spellcheck="false"></textarea>
+      <div class="hint">格式示例：{"strategy":"volBreakout","macd":{"fast":12,"slow":26,"signal":9},"sp":{...}}。sp 包含 initCapital/positionRatio/takeProfit/stopLoss/feeCfg/volParams 等回测配置。</div>
+    </div>
+    <div class="actions">
+      <button class="secondary" onclick="closeModal()">取消</button>
+      <button onclick="saveStrategyForm()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '';
+const STRATEGY_TYPE_LABEL = {
+  rate: 'MACD速率', cross: 'MACD金叉', bar: 'MACD柱', triple: '三指标共振', macdRsi: 'MACD+RSI',
+  macdKdj: 'MACD+KDJ', kdjBottom: 'KDJ抄底', rsiKdjBottom: 'RSI+KDJ双底', kdjRsiOverSell: 'KDJ+RSI超卖',
+  rsiKdjDual: 'RSI+KDJ双确认', kdjJ: 'KDJ-J极值', rsiDual: 'RSI双线', rsiDivergence: 'RSI背离',
+  bollBreak: '布林带突破', bias: 'BIAS乖离', volBreakout: '放量突破', volPullback: '缩量回调',
+  volRatio: '量比异动', obv: 'OBV能量潮', vwap: 'VWAP', volShrink: '地量见地价',
+  volDivergence: '量价背离', vr: 'VR变异率'
+};
+
+const fmtMoney = (v) => v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+function showMsg(msg, isOk = false) {
+  const el = document.getElementById('pageMsg');
+  el.textContent = msg;
+  el.style.color = isOk ? '#34a853' : '#e8453c';
+  el.style.display = 'block';
+}
+
+// 参数摘要
+function strategySummary(params) {
+  const p = params || {};
+  const sp = p.sp || {};
+  const macd = p.macd || {};
+  const vp = sp.volParams || {};
+  const parts = [];
+  if (macd.fast) parts.push(`MACD(${macd.fast},${macd.slow},${macd.signal})`);
+  if (sp.positionRatio) parts.push(`仓位${(sp.positionRatio * 100).toFixed(0)}%`);
+  if (sp.takeProfit) parts.push(`止盈${sp.takeProfit}%`);
+  if (sp.stopLoss) parts.push(`止损${sp.stopLoss}%`);
+  const filters = [];
+  if (sp.flatFilter && sp.flatFilter.enabled) filters.push('横盘');
+  if (sp.fastSell && sp.fastSell.enabled) filters.push('快卖');
+  if (sp.ma5Sell && sp.ma5Sell.enabled) filters.push('MA5');
+  if (sp.buyStrength && sp.buyStrength.enabled) filters.push('强度');
+  if (sp.trendFilter && sp.trendFilter.enabled) filters.push('趋势');
+  if (filters.length) parts.push(`过滤:${filters.join('/')}`);
+  if (vp.volN) parts.push(`量能N${vp.volN}/倍${vp.volMult}`);
+  return parts.join(' | ') || '默认';
+}
+
+// 加载策略列表
+async function loadStrategies() {
+  const body = document.getElementById('strategyTableBody');
+  try {
+    const res = await fetch(`${API_BASE}/api/strategies`);
+    const data = await res.json();
+    if (data.error) { body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#e8453c;">${data.error}</td></tr>`; return; }
+    const list = data.data || [];
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">暂无已保存的策略，点击「新建策略」创建</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(s => {
+      const label = STRATEGY_TYPE_LABEL[s.strategy_type] || s.strategy_type;
+      const desc = (s.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `
+        <tr>
+          <td>${s.id}</td>
+          <td style="text-align:left;font-weight:600;">${s.strategy_name}</td>
+          <td>${label}</td>
+          <td style="text-align:left;font-size:11px;">${strategySummary(s.params)}</td>
+          <td style="text-align:left;font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${desc}">${desc || '<span style="color:#999;">-</span>'}</td>
+          <td>${s.updated_at || s.created_at || ''}</td>
+          <td style="text-align:center;white-space:nowrap;">
+            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="gotoBacktest(${s.id})">加载到回测</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="openEditModal(${s.id})">编辑</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;color:#e8453c;border-color:#e8453c;" onclick="deleteStrategy(${s.id}, '${s.strategy_name}')">删除</button>
+          </td>
+        </tr>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#e8453c;">加载失败（请确认已运行 python server.py）: ${e.message}</td></tr>`;
+  }
+}
+
+// 跳转到回测页并自动加载该策略
+function gotoBacktest(id) {
+  window.location.href = `backtest.html?load=${id}`;
+}
+
+// ---- 新建/编辑 ----
+function initTypeSelect() {
+  document.getElementById('formType').innerHTML =
+    Object.entries(STRATEGY_TYPE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+}
+
+function openCreateModal() {
+  document.getElementById('modalTitle').textContent = '新建策略';
+  document.getElementById('editId').value = '';
+  document.getElementById('formName').value = '';
+  document.getElementById('formDesc').value = '';
+  document.getElementById('formParams').value = '';
+  initTypeSelect();
+  document.getElementById('strategyModal').classList.add('show');
+}
+
+async function openEditModal(id) {
+  try {
+    const res = await fetch(`${API_BASE}/api/strategies`);
+    const data = await res.json();
+    const item = (data.data || []).find(s => s.id === id);
+    if (!item) { showMsg('未找到该策略'); return; }
+    document.getElementById('modalTitle').textContent = '编辑策略';
+    document.getElementById('editId').value = id;
+    document.getElementById('formName').value = item.strategy_name;
+    document.getElementById('formDesc').value = item.description || '';
+    document.getElementById('formParams').value = JSON.stringify(item.params || {}, null, 2);
+    initTypeSelect();
+    document.getElementById('formType').value = item.strategy_type;
+    document.getElementById('strategyModal').classList.add('show');
+  } catch (e) {
+    showMsg('加载失败: ' + e.message);
+  }
+}
+
+function closeModal() {
+  document.getElementById('strategyModal').classList.remove('show');
+}
+
+// 按类型生成示例描述
+function fillExampleDesc() {
+  const st = document.getElementById('formType').value;
+  const descMap = {
+    rate: 'MACD速率策略：当MACD柱状线向上加速时买入，利用动能拐点捕捉主升浪。示例：股价回调后MACD红柱重新放大买入，配合止损3%、止盈5%使用。',
+    cross: 'MACD金叉策略：DIF上穿DEA形成金叉买入，死叉卖出，经典趋势跟随。示例：周线级别金叉且股价站上MA20时买入，适合中期波段。',
+    bar: 'MACD柱策略：红柱持续放大买入，绿柱转红柱是启动信号。示例：DIF在零轴上方二次金叉（空中加油）买入，胜率相对更高。',
+    triple: '三指标共振策略：MACD金叉+RSI回升+KDJ金叉同时满足才买入，过滤单指标假信号。示例：三指标同一天共振买入，震荡市中效果更好。',
+    macdRsi: 'MACD+RSI组合：MACD金叉且RSI脱离超卖区回升买入。示例：RSI从超卖区回升至40以上且MACD金叉时买入。',
+    macdKdj: 'MACD+KDJ组合：MACD金叉且KDJ金叉买入，双指标确认。示例：KDJ在20以下金叉同时MACD零轴下金叉，反弹信号更强。',
+    kdjBottom: 'KDJ抄底策略：KDJ的J值跌破0（超卖）后回升买入。示例：连续下跌后J值进入负值区间再上穿0轴，短线反弹概率高。',
+    rsiKdjBottom: 'RSI+KDJ双底策略：RSI与KDJ同时超卖且双双回升买入。示例：RSI<20且KDJ<20后同时拐头向上时买入。',
+    kdjRsiOverSell: 'KDJ+RSI超卖策略：两者均处于超卖区且开始反弹买入。示例：RSI<30、KDJ<20且当日收阳时买入，反弹思路。',
+    rsiKdjDual: 'RSI+KDJ双确认：RSI金叉与KDJ金叉同时出现才买入。示例：双金叉且成交量温和放大时买入，信号更可靠。',
+    kdjJ: 'KDJ-J极值策略：J值>100（超买）卖出或J值<0（超卖）买入。示例：J值跌破-10后回升买入，短线反弹博弈。',
+    rsiDual: 'RSI双线策略：RSI快线上穿慢线买入，下穿卖出。示例：RSI6上穿RSI12且位置在50以上时买入，顺势操作。',
+    rsiDivergence: 'RSI背离策略：价格创新低但RSI未创新低（底背离）买入。示例：股价新低而RSI抬升，主力资金悄悄吸筹的信号。',
+    bollBreak: '布林带突破策略：股价跌破下轨后回升买入（超跌反弹），突破上轨后回落卖出（超买）。示例：股价跌破下轨2日重新站回下轨时买入。',
+    bias: 'BIAS乖离策略：乖离率过大超卖买入，过大正值超买卖出。示例：连续暴跌后BIAS6<-6%时买入，博取均值回归。',
+    volBreakout: '放量突破策略：收盘价放量突破前20日最高价（量>1.5倍5日均量）买入，放量跌破前低卖出。示例：横盘整理后放量突破平台，配合止损3%使用。',
+    volPullback: '缩量回调策略：上升趋势中回调缩量买入，属趋势中低吸。示例：沿MA20上涨的股票回调至MA5下方且缩量时买入。',
+    volRatio: '量比异动策略：量比≥2且收阳买入（资金进场），放量收阴卖出（资金出逃）。示例：早盘量比突然放大且价格拉升时买入。',
+    obv: 'OBV能量潮策略：OBV创20日新高买入（资金持续流入），创新低卖出。示例：股价横盘但OBV创新高，主力暗中吸筹时买入。',
+    vwap: 'VWAP量价均价策略：收盘价上穿VWAP买入（多头占优），下穿卖出。示例：日内价格站上VWAP且量能配合时买入，机构常用作多空分界。',
+    volShrink: '地量见地价策略：成交量萎缩至0.5倍均量以下且收阳买入，放量收阴卖出。示例：连续缩量后出现地量并收阳，抛压枯竭时抄底。',
+    volDivergence: '量价背离策略：价格创新低但成交量未创新低（底背离）买入；价格创新高但量能未同步放大（顶背离）卖出。示例：股价新低而量能未创新低，资金承接时买入。',
+    vr: 'VR成交量变异率策略：VR从低位区上穿买入，从高位区下穿卖出。示例：VR跌至低位后回升，情绪冰点反转时买入。'
+  };
+  document.getElementById('formDesc').value = descMap[st] || `${STRATEGY_TYPE_LABEL[st]}策略：按预设信号买入、卖出。示例：设置止损3%、止盈5%后运行回测对比。`;
+}
+
+// 按类型生成示例参数（空 sp 骨架，回测页加载后可用当前配置补充）
+function fillExampleParams() {
+  const st = document.getElementById('formType').value;
+  const example = {
+    strategy: st,
+    macd: { fast: 12, slow: 26, signal: 9 },
+    sp: {
+      initCapital: 100000,
+      positionRatio: 0.5,
+      maxAdds: 2,
+      takeProfit: 5,
+      partialRatio: 0.5,
+      stopLoss: 3,
+      enableT1: false,
+      feeCfg: { commissionRate: 2.5, commissionMin: 5, stampTax: 0.5, transferFee: 0.1 },
+      flatFilter: { enabled: false, window: 10, threshold: 3 },
+      fastSell: { enabled: false, threshold: -0.05 },
+      ma5Sell: { enabled: false },
+      aboveWaterOnly: false,
+      buyStrength: { enabled: false, threshold: 0.02 },
+      trendFilter: { enabled: false, mode: 'both' },
+      volParams: { volN: 5, volBreakN: 20, volMult: 1.5, shrinkMult: 0.5, volTrendN: 20, volRatioBuy: 2, vrN: 26, vrBuyThr: 70, vrSellThr: 150 }
+    }
+  };
+  document.getElementById('formParams').value = JSON.stringify(example, null, 2);
+}
+
+// 保存（新建或更新）
+async function saveStrategyForm() {
+  const name = (document.getElementById('formName').value || '').trim();
+  const stype = document.getElementById('formType').value;
+  const desc = (document.getElementById('formDesc').value || '').trim();
+  const raw = document.getElementById('formParams').value.trim();
+  if (!name) { showMsg('请填写策略名称'); return; }
+  let params = {};
+  if (raw) {
+    try { params = JSON.parse(raw); }
+    catch (e) { showMsg('参数 JSON 解析失败: ' + e.message); return; }
+  }
+  const id = document.getElementById('editId').value;
+  try {
+    if (id) {
+      const res = await fetch(`${API_BASE}/api/strategy/update`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: parseInt(id), strategy_name: name, params: params, description: desc || undefined })
+      });
+      const data = await res.json();
+      if (data.error) { showMsg(data.error); return; }
+      showMsg('策略已更新', true);
+    } else {
+      const res = await fetch(`${API_BASE}/api/strategy/save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy_name: name, strategy_type: stype, params: params, description: desc })
+      });
+      const data = await res.json();
+      if (data.error) { showMsg(data.error); return; }
+      showMsg(`策略「${name}」已保存`, true);
+    }
+    closeModal();
+    loadStrategies();
+  } catch (e) {
+    showMsg('保存失败: ' + e.message);
+  }
+}
+
+// 删除策略
+async function deleteStrategy(id, name) {
+  if (!confirm(`确定删除策略「${name}」？`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    });
+    const data = await res.json();
+    if (data.error) { showMsg(data.error); return; }
+    showMsg('策略已删除', true);
+    loadStrategies();
+  } catch (e) {
+    showMsg('删除失败: ' + e.message);
+  }
+}
+
+// 回车关闭模态框
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// 页面初始化
+loadStrategies();
+</script>
+</body>
+</html>
