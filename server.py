@@ -103,10 +103,17 @@ class QuantHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            self.handle_api_post(parsed)
+        else:
+            self._send_json({"error": "未知接口"}, 404)
+
     # ---------- API ----------
 
     def handle_api(self, parsed: urlparse):
-        """分发 /api/* 请求"""
+        """分发 /api/* GET 请求"""
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         try:
             if parsed.path == "/api/kline":
@@ -127,11 +134,107 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_fetch(params)
             elif parsed.path == "/api/refresh_today":
                 self.api_refresh_today(params)
+            elif parsed.path == "/api/strategies":
+                self.api_strategies(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
             logger.exception("API处理失败: %s", parsed.path)
             self._send_json({"error": str(e)}, 500)
+
+    def handle_api_post(self, parsed: urlparse):
+        """分发 /api/* POST 请求（策略保存/更新/删除）"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = {}
+            if length > 0:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+            if parsed.path == "/api/strategy/save":
+                self.api_strategy_save(body)
+            elif parsed.path == "/api/strategy/update":
+                self.api_strategy_update(body)
+            elif parsed.path == "/api/strategy/delete":
+                self.api_strategy_delete(body)
+            else:
+                self._send_json({"error": "未知接口"}, 404)
+        except Exception as e:
+            logger.exception("API处理失败: %s", parsed.path)
+            self._send_json({"error": str(e)}, 500)
+
+    def _parse_strategy_params(self, params):
+        """兼容 DB 返回的 JSONB 字段：psycopg2 对 jsonb 默认返回 str，统一转成 dict"""
+        import json as _json
+        if isinstance(params, str):
+            try:
+                return _json.loads(params)
+            except (ValueError, TypeError):
+                return {}
+        return params or {}
+
+    def api_strategies(self, params: dict):
+        """返回已保存的策略列表（策略表）"""
+        from database.db import get_strategies
+
+        strategies = get_strategies()
+        data = []
+        for s in strategies:
+            row = {
+                "id": s["id"],
+                "strategy_name": s["strategy_name"],
+                "strategy_type": s["strategy_type"],
+                "params": self._parse_strategy_params(s["params"]),
+                "is_active": s["is_active"],
+                "created_at": s["created_at"].strftime("%Y-%m-%d %H:%M") if s.get("created_at") else "",
+                "updated_at": s["updated_at"].strftime("%Y-%m-%d %H:%M") if s.get("updated_at") else "",
+            }
+            data.append(row)
+        self._send_json({"data": data}, 200)
+
+    def api_strategy_save(self, body: dict):
+        """保存策略：{strategy_name, strategy_type, params} → 返回 {id}"""
+        from database.db import save_strategy
+
+        name = (body.get("strategy_name") or "").strip()
+        stype = (body.get("strategy_type") or "").strip()
+        params = body.get("params") or {}
+        if not name:
+            self._send_json({"error": "缺少参数 strategy_name"}, 400)
+            return
+        if not stype:
+            self._send_json({"error": "缺少参数 strategy_type"}, 400)
+            return
+        strategy_id = save_strategy(name, stype, params)
+        self._send_json({"ok": True, "id": strategy_id, "message": f"策略「{name}」已保存"}, 200)
+
+    def api_strategy_update(self, body: dict):
+        """更新策略：{id, strategy_name?, params?}"""
+        from database.db import update_strategy
+
+        try:
+            strategy_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            self._send_json({"error": "缺少或无效参数 id"}, 400)
+            return
+        name = (body.get("strategy_name") or "").strip()
+        params = body.get("params")
+        update_strategy(
+            strategy_id,
+            strategy_name=name or None,
+            params=params if params is not None else None,
+        )
+        self._send_json({"ok": True, "message": "策略已更新"}, 200)
+
+    def api_strategy_delete(self, body: dict):
+        """删除策略：{id}"""
+        from database.db import delete_strategy
+
+        try:
+            strategy_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            self._send_json({"error": "缺少或无效参数 id"}, 400)
+            return
+        delete_strategy(strategy_id)
+        self._send_json({"ok": True, "message": "策略已删除"}, 200)
 
     def api_kline(self, params: dict):
         """拉取个股日线数据（查库→增量拉取→入库→返回）

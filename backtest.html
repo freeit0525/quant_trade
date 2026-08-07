@@ -70,6 +70,7 @@
   .result-card .value { font-family: Consolas, monospace; font-weight: 700; font-size: 18px; }
   .positive { color: #e8453c; }
   .negative { color: #34a853; }
+  .open-cell { color: #ff9800; }
   table {
     width: 100%;
     border-collapse: collapse;
@@ -196,6 +197,14 @@
           <option value="rsiDivergence">RSI底背离（价创新低RSI不破前低买）</option>
           <option value="bollBreak">布林带突破（跌破下轨回升买/突破上轨回落卖）</option>
           <option value="bias">BIAS乖离率（负乖离过大买/正乖离过大卖）</option>
+          <option value="volBreakout">放量突破（放量突破前高买/放量跌破前低卖）</option>
+          <option value="volPullback">缩量回调（上升趋势中缩量回踩买）</option>
+          <option value="volRatio">量比异动（放量上攻买/放量下跌卖）</option>
+          <option value="obv">OBV能量潮（OBV创新高买/创新低卖）</option>
+          <option value="vwap">VWAP量价均价（收盘上穿买/下穿卖）</option>
+          <option value="volShrink">地量见地价（地量收阳买/放量收阴卖）</option>
+          <option value="volDivergence">量价背离（底背离买/顶背离卖）</option>
+          <option value="vr">VR成交量变异率（低位上穿买/高位下穿卖）</option>
         </select>
       </div>
     </div>
@@ -222,6 +231,50 @@
         <button class="secondary" onclick="setShortParams()">短线(6/12/5)</button>
         <button class="secondary" onclick="setAStockParams()">A股短线(3/8/3)</button>
         <button class="secondary" onclick="setALongParams()">A股长线(10/20/7)</button>
+      </div>
+    </div>
+
+    <div class="sub-section">
+      <div class="sub-title">量能策略参数（放量突破/缩量回调/量比/OBV/VWAP/地量/量价背离/VR 共用）</div>
+      <div class="row params">
+        <div class="field">
+          <label>均量周期 N</label>
+          <input type="number" id="volN" value="5" min="2" max="120">
+        </div>
+        <div class="field">
+          <label>突破/背离观察周期</label>
+          <input type="number" id="volBreakN" value="20" min="5" max="250">
+        </div>
+        <div class="field">
+          <label>放量倍数</label>
+          <input type="number" id="volMult" value="1.5" min="1" step="0.1">
+        </div>
+        <div class="field">
+          <label>缩量/地量阈值（×均量）</label>
+          <input type="number" id="shrinkMult" value="0.5" min="0.1" step="0.05">
+        </div>
+        <div class="field">
+          <label>趋势均线周期</label>
+          <input type="number" id="volTrendN" value="20" min="5" max="250">
+        </div>
+      </div>
+      <div class="row params">
+        <div class="field">
+          <label>量比买入阈值</label>
+          <input type="number" id="volRatioBuy" value="2" min="1" step="0.5">
+        </div>
+        <div class="field">
+          <label>VR 周期</label>
+          <input type="number" id="vrN" value="26" min="5" max="120">
+        </div>
+        <div class="field">
+          <label>VR 低位阈值（买入）</label>
+          <input type="number" id="vrBuyThr" value="70" min="20" max="200">
+        </div>
+        <div class="field">
+          <label>VR 高位阈值（卖出）</label>
+          <input type="number" id="vrSellThr" value="150" min="80" max="500">
+        </div>
       </div>
     </div>
 
@@ -371,6 +424,32 @@
     </div>
   </div>
 
+  <!-- 策略表：保存/加载/删除已保存的策略配置 -->
+  <div class="panel">
+    <h2>策略表（保存/加载策略）</h2>
+    <div class="row" style="align-items:flex-end;">
+      <div class="field" style="flex:0 0 280px;">
+        <label>策略名称</label>
+        <input type="text" id="strategyNameInput" placeholder="如：放量突破-短线" maxlength="100">
+      </div>
+      <div class="actions" style="margin:0;">
+        <button onclick="saveCurrentStrategy()">保存当前策略</button>
+        <button class="secondary" onclick="loadStrategies()">刷新列表</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:6px;">保存会把当前预设策略类型、MACD参数、资金仓位、信号增强、量能参数、手续费等全部配置存入数据库 strategy.config 表。</div>
+    <div id="strategyTableWrap" style="margin-top:10px;">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>策略名称</th><th>类型</th><th>参数摘要</th><th>更新时间</th><th style="text-align:center">操作</th></tr>
+        </thead>
+        <tbody id="strategyTableBody">
+          <tr><td colspan="6" style="text-align:center;color:#999;">正在加载已保存的策略...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="errorMsg" class="error"></div>
 
   <!-- 回测结果 -->
@@ -490,12 +569,23 @@ function updateRangeUI() {
   }
 }
 
+// 数据库预计算的 MACD 参数组列后缀（与后端 MACD_GROUPS 一致，空=默认 12/26/9）
+const MACD_SUFFIXES = ['', '_6_12_5', '_3_8_3', '_10_20_7'];
+
 // 把 Date 转成 YYYYMMDD（东方财富 beg/end 参数格式）
 function dateToYYYYMMDD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}${m}${day}`;
+}
+
+// YYYYMMDD 按自然日偏移（正=向后，负=向前）
+function addDays(dateStr, deltaDays) {
+  const y = +dateStr.slice(0, 4), m = +dateStr.slice(4, 6), d = +dateStr.slice(6, 8);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + deltaDays);
+  return dateToYYYYMMDD(dt);
 }
 
 // 根据当前模式构造请求参数 { beg, end, lmt }
@@ -555,8 +645,13 @@ async function fetchStock() {
 
     const range = buildRangeParams();
 
+    // MACD/MA 等滚动指标依赖长历史预热（EMA26 约需 200+ 交易日收敛）。
+    // 请求时把开始日期前移约 380 个自然日，前端用全量数据计算指标后再裁剪回用户范围，
+    // 避免短区间拉取时指标因起点不同与行情软件（全量历史计算）不一致。
+    const warmupDays = 380;
+    const warmupBeg = addDays(range.beg, -warmupDays);
     // 通过本地服务拉取：先查库→增量拉取→入库，再返回完整数据
-    const url = `${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`;
+    const url = `${API_BASE}/api/kline?code=${code}&beg=${warmupBeg}&end=${range.end}`;
     const res = await fetch(url);
     const data = await res.json();
 
@@ -568,23 +663,41 @@ async function fetchStock() {
 
     name = name || data.stock?.name || code;
     const klines = data.data;
-    // 每条记录: date/open/close/high/low/volume/amount/turnover/pct_change/change/amplitude
-    const ohlc = klines.map(k => ({
-      date: k.date, open: +k.open, close: +k.close, high: +k.high, low: +k.low,
-      volume: +k.volume, amount: +k.amount, amplitude: +k.amplitude, pctChange: +k.pct_change, change: +k.change, turnover: +k.turnover
-    }));
+    // 每条记录: date/open/close/high/low/volume/amount/turnover/pct_change/change/amplitude + macd 预置列
+    const ohlc = klines.map(k => {
+      const o = {
+        date: k.date, open: +k.open, close: +k.close, high: +k.high, low: +k.low,
+        volume: +k.volume, amount: +k.amount, amplitude: +k.amplitude, pctChange: +k.pct_change, change: +k.change, turnover: +k.turnover,
+        volumeRatio: k.volume_ratio != null ? +k.volume_ratio : null
+      };
+      // 保留数据库基于全量历史算好的 MACD（各参数组），优先直接使用
+      MACD_SUFFIXES.forEach(s => {
+        o[`macd_dif${s}`] = k[`macd_dif${s}`] != null ? +k[`macd_dif${s}`] : null;
+        o[`macd_dea${s}`] = k[`macd_dea${s}`] != null ? +k[`macd_dea${s}`] : null;
+        o[`macd_hist${s}`] = k[`macd_hist${s}`] != null ? +k[`macd_hist${s}`] : null;
+      });
+      return o;
+    });
 
     // 剔除今日未收盘的K线（若今日是交易日且当前在盘中或之前）
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    let completeOhlc = ohlc;
+    let completeAll = ohlc;
     if (ohlc.length > 0 && ohlc[ohlc.length - 1].date === todayStr) {
-      completeOhlc = ohlc.slice(0, -1);
+      completeAll = ohlc.slice(0, -1);
     }
 
+    // 计算预热根数：用户选择起始日期之前的数据仅用于指标预热，不参与展示/回测
+    const begStr = String(range.beg).replace(/-/g, '');
+    let warmupIdx = completeAll.findIndex(k => String(k.date).replace(/-/g, '') >= begStr);
+    if (warmupIdx < 0) warmupIdx = 0;
+    const completeOhlc = completeAll.slice(warmupIdx);
+
     window.__backtestOhlc = completeOhlc;
+    window.__backtestAllCloses = completeAll.map(k => k.close); // 含预热，供 MACD 全量计算
+    window.__backtestWarmup = warmupIdx;
     window.__backtestStock = { code, name };
-    window.__backtestAllOhlc = ohlc; // 含可能未收盘的当日
+    window.__backtestAllOhlc = completeAll; // 含预热与可能未收盘的当日
 
     const lastClose = completeOhlc[completeOhlc.length - 1].close;
     const firstDate = completeOhlc[0].date;
@@ -691,6 +804,38 @@ function calcBIAS(closes, n = 6) {
   return bias;
 }
 
+// ============ 量能指标 ============
+// OBV能量潮：涨日累加成交量、跌日累减、平盘不变
+function calcOBV(ohlc) {
+  const obv = new Array(ohlc.length).fill(0);
+  for (let i = 0; i < ohlc.length; i++) {
+    if (i === 0) { obv[i] = ohlc[i].volume || 0; continue; }
+    if (ohlc[i].close > ohlc[i - 1].close) obv[i] = obv[i - 1] + (ohlc[i].volume || 0);
+    else if (ohlc[i].close < ohlc[i - 1].close) obv[i] = obv[i - 1] - (ohlc[i].volume || 0);
+    else obv[i] = obv[i - 1];
+  }
+  return obv;
+}
+
+// VR成交量变异率：VR = (上涨日量+0.5×平盘日量) / (下跌日量+0.5×平盘日量) × 100
+function calcVR(ohlc, n = 26) {
+  const len = ohlc.length;
+  const vr = new Array(len).fill(null);
+  for (let i = n; i < len; i++) {
+    let up = 0, down = 0, flat = 0;
+    for (let j = i - n + 1; j <= i; j++) {
+      const ch = ohlc[j].close - ohlc[j - 1].close;
+      const v = ohlc[j].volume || 0;
+      if (ch > 0) up += v;
+      else if (ch < 0) down += v;
+      else flat += v;
+    }
+    const denom = down + 0.5 * flat;
+    vr[i] = denom === 0 ? (up > 0 ? 999 : 100) : (up + 0.5 * flat) / denom * 100;
+  }
+  return vr;
+}
+
 // ============ 策略信号生成 ============
 // 生成每日信号：返回数组，每个元素为 'buy' | 'sell' | null
 // flatFilter：横盘时不买入
@@ -698,11 +843,14 @@ function calcBIAS(closes, n = 6) {
 // ma5Sell：MA5一阶下降则卖（OR）
 // aboveWaterOnly：水上（MACD柱>0）时增强卖出（快速卖出/MA5拐头）不生效，只认原策略死叉
 // buyStrength：买入信号需MACD柱≥阈值才生效（过滤弱金叉）
-function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Sell, aboveWaterOnly, buyStrength, trendFilter) {
+function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Sell, aboveWaterOnly, buyStrength, trendFilter, volParams) {
   const { dif, dea, macd } = macdResult;
   const n = macd.length;
   const signals = new Array(n).fill(null);
   const sellSource = new Array(n).fill(null); // 标记卖出信号来源：'orig' | 'fast' | 'ma5'
+  const vp = volParams || { volN: 5, volBreakN: 20, volMult: 1.5, shrinkMult: 0.5, volTrendN: 20, volRatioBuy: 2, vrN: 26, vrBuyThr: 70, vrSellThr: 150 };
+  const vols = ohlc.map(k => k.volume);
+  const closes = ohlc.map(k => k.close);
 
   // 横盘判定：近 window 日 (最高-最低)/均值 < threshold
   const isFlat = new Array(n).fill(false);
@@ -890,6 +1038,105 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
       if (bias[i] < -5) signals[i] = 'buy';
       else if (bias[i] > 5) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
     }
+  } else if (strategy === 'volBreakout') {
+    // 放量突破：收盘放量突破前N日最高价买入；放量跌破前N日最低价卖出
+    const volMA = calcMA(vols, vp.volN);
+    for (let i = 1; i < n; i++) {
+      if (volMA[i] == null) continue;
+      let hi = -Infinity, lo = Infinity;
+      for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
+        if (ohlc[j].high > hi) hi = ohlc[j].high;
+        if (ohlc[j].low < lo) lo = ohlc[j].low;
+      }
+      const expand = ohlc[i].volume > vp.volMult * volMA[i];
+      if (expand && ohlc[i].close > hi) signals[i] = 'buy';
+      else if (expand && ohlc[i].close < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'volPullback') {
+    // 缩量回调：上升趋势(收盘>趋势均线) + 回调(收盘<MA5) + 缩量(量<N日均量×阈值)买入；放量收阴或跌破趋势均线卖出
+    const volMA = calcMA(vols, vp.volN);
+    const ma5 = calcMA(closes, 5);
+    const maTrend = calcMA(closes, vp.volTrendN);
+    for (let i = 1; i < n; i++) {
+      if (volMA[i] == null || ma5[i] == null || maTrend[i] == null) continue;
+      const upTrend = closes[i] > maTrend[i];
+      const pullback = closes[i] < ma5[i];
+      const shrink = ohlc[i].volume < vp.shrinkMult * volMA[i];
+      const expandBear = ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open;
+      if (upTrend && pullback && shrink) signals[i] = 'buy';
+      else if (expandBear || closes[i] < maTrend[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'volRatio') {
+    // 量比异动：量比≥阈值时，放量收阳买入；放量收阴卖出（量比优先用库中较前日量，缺失则用今日量/昨日量）
+    for (let i = 1; i < n; i++) {
+      if (ohlc[i].volume <= 0) continue;
+      const vr = ohlc[i].volumeRatio != null
+        ? ohlc[i].volumeRatio
+        : (ohlc[i - 1].volume > 0 ? ohlc[i].volume / ohlc[i - 1].volume : 0);
+      if (vr < vp.volRatioBuy) continue;
+      if (ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
+      else if (ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'obv') {
+    // OBV能量潮：OBV 创前N日新高买入；创前N日新低卖出
+    const obv = calcOBV(ohlc);
+    for (let i = 1; i < n; i++) {
+      let hi = -Infinity, lo = Infinity;
+      for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
+        if (obv[j] > hi) hi = obv[j];
+        if (obv[j] < lo) lo = obv[j];
+      }
+      if (obv[i] > hi) signals[i] = 'buy';
+      else if (obv[i] < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'vwap') {
+    // VWAP成交量加权均价：累计(收盘×量)/(累计量)，收盘上穿VWAP买入；下穿卖出
+    let cumPV = 0, cumV = 0;
+    for (let i = 0; i < n; i++) {
+      cumPV += closes[i] * vols[i];
+      cumV += vols[i];
+      if (i === 0) continue;
+      const prevPV = cumPV - closes[i] * vols[i];
+      const prevV = cumV - vols[i];
+      if (prevV <= 0) continue;
+      const vwap = cumPV / cumV;
+      const vwapPrev = prevPV / prevV;
+      if (closes[i - 1] <= vwapPrev && closes[i] > vwap) signals[i] = 'buy';
+      else if (closes[i - 1] >= vwapPrev && closes[i] < vwap) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'volShrink') {
+    // 地量见地价：成交量<均量×阈值（地量）且收阳买入；放量收阴卖出
+    const volMA = calcMA(vols, vp.volN);
+    for (let i = 1; i < n; i++) {
+      if (volMA[i] == null) continue;
+      const lowVol = ohlc[i].volume < vp.shrinkMult * volMA[i];
+      if (lowVol && ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
+      else if (ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'volDivergence') {
+    // 量价背离：价创前N日新低但量未创新低（底背离，缩量见底前兆）买入；价创前N日新高但量未创新高（顶背离）卖出
+    const W = vp.volBreakN;
+    for (let i = W; i < n; i++) {
+      let minClose = Infinity, maxClose = -Infinity, minVol = Infinity, maxVol = -Infinity;
+      for (let j = i - W; j < i; j++) {
+        if (ohlc[j].close < minClose) minClose = ohlc[j].close;
+        if (ohlc[j].close > maxClose) maxClose = ohlc[j].close;
+        if (ohlc[j].volume < minVol) minVol = ohlc[j].volume;
+        if (ohlc[j].volume > maxVol) maxVol = ohlc[j].volume;
+      }
+      // 底背离：价创新低但量未同步创新低（有资金承接）
+      if (ohlc[i].close < minClose && ohlc[i].volume > minVol) signals[i] = 'buy';
+      // 顶背离：价创新高但量未同步放大（动能衰竭）
+      else if (ohlc[i].close > maxClose && ohlc[i].volume < maxVol) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
+  } else if (strategy === 'vr') {
+    // VR成交量变异率：VR从低位区上穿（超卖回升）买入；从高位区下穿（超买回落）卖出
+    const vr = calcVR(ohlc, vp.vrN);
+    for (let i = 1; i < n; i++) {
+      if (vr[i] == null || vr[i - 1] == null) continue;
+      if (vr[i - 1] <= vp.vrBuyThr && vr[i] > vp.vrBuyThr) signals[i] = 'buy';
+      else if (vr[i - 1] >= vp.vrSellThr && vr[i] < vp.vrSellThr) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    }
   }
 
   // 快速下跌卖出：MACD一阶速率 < 负阈值即产生卖出信号
@@ -1052,6 +1299,38 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
   const trades = [];        // {date, type, price, shares, amount, fee, cashAfter, reason}
   const equity = new Array(n); // 每日总权益
 
+  // ===== 波段（完整交易循环：建仓→清仓）跟踪 =====
+  // cycle: { startIdx, startDate, buyAmount(含费总投入), buyGross(不含费), buyShares, sellAmount(净收回), lastSellPrice }
+  let cycle = null;
+  const cycles = [];        // 每个已完成/持仓中的波段记录
+
+  // 结算当前波段（isOpen=true 表示回测结束时未平仓，按最后收盘价估算浮盈亏）
+  const settleCycle = (endIdx, endDate, reason, isOpen = false) => {
+    if (!cycle) return;
+    const close = ohlc[endIdx].close;
+    const sellPrice = isOpen ? close : cycle.lastSellPrice;
+    const pnlNet = isOpen
+      ? cycle.sellAmount + shares * close - cycle.buyAmount
+      : cycle.sellAmount - cycle.buyAmount;
+    cycles.push({
+      startDate: cycle.startDate,
+      endDate,
+      holdDays: endIdx - cycle.startIdx,
+      avgBuyPrice: cycle.buyShares > 0 ? cycle.buyGross / cycle.buyShares : 0,
+      sellPrice,
+      buyShares: cycle.buyShares,
+      pnl: pnlNet,
+      returnPct: cycle.buyAmount > 0 ? pnlNet / cycle.buyAmount : 0,
+      reason,
+      open: isOpen
+    });
+    cycle = null;
+  };
+  // 卖出后把净收回金额累计到当前波段
+  const accSell = (net, price) => {
+    if (cycle) { cycle.sellAmount += net; cycle.lastSellPrice = price; }
+  };
+
   for (let i = 0; i < n; i++) {
     const k = ohlc[i];
     const close = k.close;
@@ -1073,10 +1352,12 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
         cash += net;
         totalFee += fee.total;
         trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: `止损(${stopLoss}%)` });
+        accSell(net, sellPrice);
         shares = 0;
         avgCost = 0;
         adds = 0;
         partialTaken = false;
+        settleCycle(i, k.date, `止损(${stopLoss}%)`);
       } else if (takeProfit > 0 && !partialTaken && k.high >= tpPrice) {
         // 止盈：卖出部分仓位
         const sellShares = Math.floor(shares * partialRatio / 100) * 100;
@@ -1089,6 +1370,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
           cash += net;
           totalFee += fee.total;
           trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares: actualSell, amount: gross, fee: fee.total, cashAfter: cash, reason: `止盈(${takeProfit}%)` });
+          accSell(net, sellPrice);
           shares -= actualSell;
           partialTaken = true;
           // avgCost 不变
@@ -1101,10 +1383,12 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
           cash += net;
           totalFee += fee.total;
           trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: `止盈(${takeProfit}%)全平` });
+          accSell(net, sellPrice);
           shares = 0;
           avgCost = 0;
           adds = 0;
           partialTaken = false;
+          settleCycle(i, k.date, `止盈(${takeProfit}%)全平`);
         }
       }
     }
@@ -1131,6 +1415,13 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
             totalFee += fee.total;
             adds++;
             lastBuyIdx = i;
+            if (adds === 1) {
+              // 首个买入：开启新波段
+              cycle = { startIdx: i, startDate: k.date, buyAmount: 0, buyGross: 0, buyShares: 0, sellAmount: 0, lastSellPrice: null };
+            }
+            cycle.buyAmount += totalCost;
+            cycle.buyGross += gross;
+            cycle.buyShares += buyShares;
             const reason = adds === 1 ? '首次建仓' : `加仓${adds - 1}`;
             trades.push({ idx: i, date: k.date, type: 'buy', price: close, shares: buyShares, amount: gross, fee: fee.total, cashAfter: cash, reason });
           }
@@ -1143,10 +1434,12 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
       cash += net;
       totalFee += fee.total;
       trades.push({ idx: i, date: k.date, type: 'sell', price: close, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: '信号卖出' });
+      accSell(net, close);
       shares = 0;
       avgCost = 0;
       adds = 0;
       partialTaken = false;
+      settleCycle(i, k.date, '信号卖出');
     }
 
     equity[i] = cash + shares * close;
@@ -1155,7 +1448,12 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
   // 最终权益 = 最后一日现金 + 持仓市值（不强制平仓）
   const finalEquity = equity[n - 1];
 
-  return { trades, equity, finalEquity, initCapital, totalFee };
+  // 回测结束仍有持仓：作为未平仓波段记录（浮盈按最后收盘价估算）
+  if (cycle && shares > 0) {
+    settleCycle(n - 1, ohlc[n - 1].date, '持仓中（未平仓）', true);
+  }
+
+  return { trades, equity, cycles, finalEquity, initCapital, totalFee };
 }
 
 // ============ 统计指标 ============
@@ -1166,23 +1464,9 @@ function calcMetrics(ohlc, result) {
   // 总收益率（已扣手续费）
   const totalReturn = (finalEquity - initCapital) / initCapital;
 
-  // 胜率：以完整交易循环（建仓→清仓）计算净盈亏（含手续费）
-  const cyclePnls = [];
-  let buyNet = 0;   // 累计买入净支出（含买入手续费）
-  let sellNet = 0;  // 累计卖出净收回（扣卖出手续费）
-  for (let i = 0; i < trades.length; i++) {
-    const t = trades[i];
-    if (t.type === 'buy') {
-      buyNet += t.amount + t.fee;
-    } else {
-      sellNet += t.amount - t.fee;
-      if (t.reason === '信号卖出' || t.reason.includes('止损') || t.reason.includes('全平')) {
-        // 清仓，计算本次循环净盈亏
-        cyclePnls.push(sellNet - buyNet);
-        buyNet = 0; sellNet = 0;
-      }
-    }
-  }
+  // 胜率：以完整交易循环（建仓→清仓）计算净盈亏（含手续费），未平仓波段不计入
+  const closedCycles = (result.cycles || []).filter(c => !c.open);
+  const cyclePnls = closedCycles.map(c => c.pnl);
 
   const winCycles = cyclePnls.filter(p => p > 0).length;
   const winRate = cyclePnls.length > 0 ? winCycles / cyclePnls.length : 0;
@@ -1218,7 +1502,7 @@ function calcMetrics(ohlc, result) {
 // ============ K线绘制（带买卖点标记） ============
 const klineCharts = {};
 
-function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instanceKey = 'bt') {
+function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, instanceKey = 'bt') {
   if (klineCharts[instanceKey]) {
     const old = klineCharts[instanceKey];
     if (old.canvas) {
@@ -1241,9 +1525,13 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
   ctx.scale(dpr, dpr);
 
   const W = cssW, H = cssH;
-  const padL = 44, padR = 44, padT = 10, padB = 24;
+  const padL = 44, padR = 44, padT = 10, padB = 24, gap = 12;
   const chartW = W - padL - padR;
-  const chartH = H - padT - padB;
+  const totalH = H - padT - padB;
+  const macdH = Math.max(90, Math.round(totalH * 0.34));
+  const mainH = totalH - macdH - gap;
+  const macdTop = padT + mainH + gap;
+  const macdBottom = macdTop + macdH;
 
   const allHighs = ohlcData.map(k => k.high);
   const allLows = ohlcData.map(k => k.low);
@@ -1259,8 +1547,22 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
   const slot = chartW / n;
   const bodyW = Math.max(2, slot * 0.6);
 
-  const yOf = (price) => padT + (maxP - price) / (maxP - minP) * chartH;
+  const yOf = (price) => padT + (maxP - price) / (maxP - minP) * mainH;
   const xOf = (i) => padL + slot * (i + 0.5);
+
+  // MACD 副图数值范围（DIF/DEA/MACD柱统一取 min/max）
+  const macdVals = [];
+  if (macd) {
+    (macd.dif || []).forEach(v => { if (v != null) macdVals.push(v); });
+    (macd.dea || []).forEach(v => { if (v != null) macdVals.push(v); });
+    (macd.macd || []).forEach(v => { if (v != null) macdVals.push(v); });
+  }
+  let macdMin = macdVals.length ? Math.min(...macdVals) : -1;
+  let macdMax = macdVals.length ? Math.max(...macdVals) : 1;
+  const macdRange = (macdMax - macdMin) || 1;
+  macdMin -= macdRange * 0.1;
+  macdMax += macdRange * 0.1;
+  const yMacdOf = (v) => macdTop + (macdMax - v) / (macdMax - macdMin) * macdH;
 
   // 按idx分组交易（同一天可能有多次）
   const tradesByIdx = {};
@@ -1269,7 +1571,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
     tradesByIdx[t.idx].push(t);
   });
 
-  const instance = { canvas, ctx, ohlcData, labels, trades, tradesByIdx, padL, padR, padT, padB, chartW, chartH, maxP, minP, n, slot, bodyW, xOf, yOf, hoverIdx: -1, W, H };
+  const instance = { canvas, ctx, ohlcData, labels, trades, tradesByIdx, macd, padL, padR, padT, padB, chartW, mainH, totalH, macdTop, macdH, yMacdOf, maxP, minP, n, slot, bodyW, xOf, yOf, hoverIdx: -1, W, H };
   klineCharts[instanceKey] = instance;
 
   function render() {
@@ -1285,7 +1587,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
     const gridCount = 5;
     for (let i = 0; i <= gridCount; i++) {
       const price = maxP - (maxP - minP) * i / gridCount;
-      const y = padT + chartH * i / gridCount;
+      const y = padT + mainH * i / gridCount;
       ctx.beginPath();
       ctx.moveTo(padL, y);
       ctx.lineTo(padL + chartW, y);
@@ -1293,7 +1595,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
       ctx.fillText(price.toFixed(2), padL + chartW + 4, y);
     }
 
-    // 悬停十字线
+    // 悬停十字线（贯穿主图与MACD副图）
     if (instance.hoverIdx >= 0) {
       const hx = xOf(instance.hoverIdx);
       ctx.strokeStyle = '#999';
@@ -1301,7 +1603,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(hx, padT);
-      ctx.lineTo(hx, padT + chartH);
+      ctx.lineTo(hx, padT + totalH);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -1363,6 +1665,12 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
           ctx.fillText('B', x, ty + 4);
+          // 买入点补充 MACD 柱值
+          if (macd && macd.macd && macd.macd[idx] != null) {
+            ctx.fillStyle = 'rgba(52,168,83,0.75)';
+            ctx.font = '8px Consolas, monospace';
+            ctx.fillText(macd.macd[idx].toFixed(3), x, ty + 15);
+          }
         } else {
           ctx.fillStyle = '#e8453c';
           ctx.strokeStyle = '#e8453c';
@@ -1381,9 +1689,129 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
           ctx.textAlign = 'center';
           ctx.textBaseline = 'bottom';
           ctx.fillText('S', x, ty - 4);
+          // 卖出点补充 MACD 柱值
+          if (macd && macd.macd && macd.macd[idx] != null) {
+            ctx.fillStyle = 'rgba(232,69,60,0.75)';
+            ctx.font = '8px Consolas, monospace';
+            ctx.fillText(macd.macd[idx].toFixed(3), x, ty - 15);
+          }
         }
       });
     });
+
+    // ===== 绘制 MACD 副图（DIF/DEA线 + MACD柱 + 买卖点） =====
+    if (macd && macd.dif) {
+      const macdArr = macd.macd || [];
+
+      // 副图背景与网格
+      ctx.fillStyle = 'rgba(26,115,232,0.02)';
+      ctx.fillRect(padL, macdTop, chartW, macdH);
+      ctx.strokeStyle = '#f0f0f0';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#888';
+      ctx.font = '9px Consolas, monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i <= 2; i++) {
+        const v = macdMin + (macdMax - macdMin) * i / 2;
+        const y = yMacdOf(v);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + chartW, y);
+        ctx.stroke();
+        ctx.fillText(v.toFixed(2), padL + chartW + 4, y);
+      }
+      // 0 轴
+      const y0 = yMacdOf(0);
+      ctx.strokeStyle = '#bbb';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, y0);
+      ctx.lineTo(padL + chartW, y0);
+      ctx.stroke();
+
+      // MACD 柱（正红负绿）
+      for (let i = 0; i < n; i++) {
+        const v = macdArr[i];
+        if (v == null) continue;
+        const x = xOf(i);
+        const yv = yMacdOf(v);
+        ctx.fillStyle = v >= 0 ? '#e8453c' : '#34a853';
+        ctx.fillRect(x - bodyW / 2, Math.min(y0, yv), bodyW, Math.max(1, Math.abs(yv - y0)));
+      }
+
+      // DIF / DEA 线
+      const drawMacdLine = (arr, color) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < n; i++) {
+          const v = arr[i];
+          if (v == null) { started = false; continue; }
+          const x = xOf(i), y = yMacdOf(v);
+          if (started) ctx.lineTo(x, y);
+          else { ctx.moveTo(x, y); started = true; }
+        }
+        ctx.stroke();
+      };
+      drawMacdLine(macd.dif, '#1a73e8');
+      drawMacdLine(macd.dea, '#ff9800');
+
+      // 副图买卖点标记
+      ctx.textAlign = 'center';
+      Object.keys(tradesByIdx).forEach(idxStr => {
+        const idx = +idxStr;
+        const dayTrades = tradesByIdx[idx];
+        const hasTrade = dayTrades.some(t => t.type === 'buy' || t.type === 'sell');
+        if (!hasTrade) return;
+        const x = xOf(idx);
+        const v = macdArr[idx];
+        const yv = v != null ? yMacdOf(v) : y0;
+        dayTrades.forEach(t => {
+          if (t.type === 'buy') {
+            const ty = Math.max(y0, yv) + 9;
+            ctx.fillStyle = '#34a853';
+            ctx.strokeStyle = '#34a853';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(x, ty - 4);
+            ctx.lineTo(x - 4, ty + 3);
+            ctx.lineTo(x + 4, ty + 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.font = 'bold 8px Consolas, monospace';
+            ctx.textBaseline = 'top';
+            ctx.fillText('B', x, ty + 4);
+          } else {
+            const ty = Math.min(y0, yv) - 9;
+            ctx.fillStyle = '#e8453c';
+            ctx.strokeStyle = '#e8453c';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(x, ty + 4);
+            ctx.lineTo(x - 4, ty - 3);
+            ctx.lineTo(x + 4, ty - 3);
+            ctx.closePath();
+            ctx.fill();
+            ctx.font = 'bold 8px Consolas, monospace';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('S', x, ty - 4);
+          }
+        });
+      });
+
+      // 副图标题与图例
+      ctx.font = '10px Consolas, monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#888';
+      ctx.fillText('MACD', padL, macdTop + 2);
+      ctx.fillStyle = '#1a73e8';
+      ctx.fillText('DIF', padL + 44, macdTop + 2);
+      ctx.fillStyle = '#ff9800';
+      ctx.fillText('DEA', padL + 80, macdTop + 2);
+    }
 
     // X轴日期标签
     ctx.font = '10px Consolas, monospace';
@@ -1394,7 +1822,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
     for (let i = 0; i < n; i += labelStep) {
       const label = labels[i] || '';
       const shortLabel = label.length > 5 ? label.slice(5) : label;
-      ctx.fillText(shortLabel, xOf(i), padT + chartH + 4);
+      ctx.fillText(shortLabel, xOf(i), padT + totalH + 4);
     }
 
     // 悬停tooltip
@@ -1419,6 +1847,16 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
       { label: '最低', value: k.low.toFixed(2), color: '#34a853' },
       { label: '涨跌幅', value: (pctChange >= 0 ? '+' : '') + pctChange.toFixed(2) + '%', color: pctChange >= 0 ? '#e8453c' : '#34a853' },
     ];
+
+    // 当日 MACD 值（DIF/DEA/MACD柱）
+    const m = inst.macd;
+    if (m && m.dif && m.dif[inst.hoverIdx] != null) {
+      const i = inst.hoverIdx;
+      rows.push({ label: 'DIF', value: m.dif[i].toFixed(3), color: '#1a73e8' });
+      rows.push({ label: 'DEA', value: m.dea[i].toFixed(3), color: '#1a73e8' });
+      const macdV = m.macd[i];
+      rows.push({ label: 'MACD', value: macdV.toFixed(3), color: macdV >= 0 ? '#e8453c' : '#34a853' });
+    }
 
     // 若当日有交易，附加交易信息
     const dayTrades = inst.tradesByIdx[inst.hoverIdx];
@@ -1447,7 +1885,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
     if (bx + boxW > inst.W - inst.padR) bx = kx - 16 - boxW;
     if (bx < inst.padL) bx = inst.padL;
     let by = inst.padT + 8;
-    if (by + boxH > inst.padT + inst.chartH) by = inst.padT + inst.chartH - boxH;
+    if (by + boxH > inst.padT + inst.mainH) by = inst.padT + inst.mainH - boxH;
 
     ctx.fillStyle = 'rgba(255,255,255,0.96)';
     ctx.strokeStyle = '#ddd';
@@ -1474,7 +1912,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, instance
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    if (mx < padL || mx > padL + chartW || my < padT || my > padT + chartH) {
+    if (mx < padL || mx > padL + chartW || my < padT || my > padT + totalH) {
       if (instance.hoverIdx !== -1) { instance.hoverIdx = -1; render(); }
       return;
     }
@@ -1574,7 +2012,15 @@ const STRATEGY_DESC = {
   rsiDual: '<strong>RSI双线策略</strong>：短期RSI(6日)上穿长期RSI(24日)买入(多头动能增强)；短期下穿长期卖出。类似均线金叉思路应用于RSI。',
   rsiDivergence: '<strong>RSI底背离策略</strong>：30日窗口内，股价创出新低但RSI未破前低(底背离)→买入；股价创新高但RSI未破前高(顶背离)→卖出。背离是趋势反转的经典预警信号。',
   bollBreak: '<strong>布林带突破策略</strong>：前日收盘跌破下轨、当日回升至下轨之上买入(超卖反弹)；前日突破上轨、当日回落至上轨之下卖出(超买回落)。基于统计学价格回归中轨原理。',
-  bias: '<strong>BIAS乖离率策略</strong>：BIAS(6日)&lt;-5%(股价过度低于均线，超卖)买入；BIAS(6日)&gt;5%(过度高于均线，超买)卖出。乖离率反映价格偏离均线程度，过大易回归。'
+  bias: '<strong>BIAS乖离率策略</strong>：BIAS(6日)&lt;-5%(股价过度低于均线，超卖)买入；BIAS(6日)&gt;5%(过度高于均线，超买)卖出。乖离率反映价格偏离均线程度，过大易回归。',
+  volBreakout: '<strong>放量突破策略</strong>：收盘价放量突破前N日最高价(成交量&gt;均量×倍数)买入，确认突破有效；放量跌破前N日最低价卖出。捕捉趋势启动点。',
+  volPullback: '<strong>缩量回调策略</strong>：上升趋势(收盘&gt;趋势均线)中，价格回调跌破MA5且成交量萎缩到均量×阈值以下(抛压小)买入；放量收阴或跌破趋势均线卖出。适合趋势中低吸。',
+  volRatio: '<strong>量比异动策略</strong>：量比(较前日量)≥阈值时，放量收阳(资金进场)买入；放量收阴(资金出货)卖出。捕捉盘中量能异动。',
+  obv: '<strong>OBV能量潮策略</strong>：涨日累加成交量、跌日累减得到OBV。OBV创前N日新高(资金持续流入)买入；OBV创前N日新低卖出。用于追踪主力资金动向。',
+  vwap: '<strong>VWAP量价均价策略</strong>：计算累计成交量加权均价。收盘价上穿VWAP(多头占优)买入；下穿VWAP(空头占优)卖出。机构常用成交均价作为多空分界。',
+  volShrink: '<strong>地量见地价策略</strong>：成交量萎缩到均量×阈值以下(地量，抛压枯竭)且当日收阳(企稳)买入；放量收阴(可能见顶)卖出。适合抄底。',
+  volDivergence: '<strong>量价背离策略</strong>：价格创前N日新低但成交量未同步创新低(底背离，有资金承接)买入；价格创前N日新高但成交量未同步放大(顶背离，动能衰竭)卖出。',
+  vr: '<strong>VR成交量变异率策略</strong>：VR=(上涨日量+0.5×平盘日量)/(下跌日量+0.5×平盘日量)×100。VR从低位区上穿(超卖回升)买入；从高位区下穿(超买回落)卖出。'
 };
 
 function updateStrategyDesc() {
@@ -1612,6 +2058,15 @@ function resetStrategyParams() {
   document.getElementById('buyStrengthThreshold').value = 0.02;
   document.getElementById('enableTrendFilter').checked = false;
   document.getElementById('trendMode').value = 'both';
+  document.getElementById('volN').value = 5;
+  document.getElementById('volBreakN').value = 20;
+  document.getElementById('volMult').value = 1.5;
+  document.getElementById('shrinkMult').value = 0.5;
+  document.getElementById('volTrendN').value = 20;
+  document.getElementById('volRatioBuy').value = 2;
+  document.getElementById('vrN').value = 26;
+  document.getElementById('vrBuyThr').value = 70;
+  document.getElementById('vrSellThr').value = 150;
   document.getElementById('commissionRate').value = 2.5;
   document.getElementById('commissionMin').value = 5;
   document.getElementById('stampTax').value = 0.5;
@@ -1665,8 +2120,250 @@ function getStrategyParams() {
     trendFilter: {
       enabled: document.getElementById('enableTrendFilter').checked,
       mode: document.getElementById('trendMode').value
+    },
+    volParams: {
+      volN: parseInt(document.getElementById('volN').value),
+      volBreakN: parseInt(document.getElementById('volBreakN').value),
+      volMult: parseFloat(document.getElementById('volMult').value),
+      shrinkMult: parseFloat(document.getElementById('shrinkMult').value),
+      volTrendN: parseInt(document.getElementById('volTrendN').value),
+      volRatioBuy: parseFloat(document.getElementById('volRatioBuy').value),
+      vrN: parseInt(document.getElementById('vrN').value),
+      vrBuyThr: parseFloat(document.getElementById('vrBuyThr').value),
+      vrSellThr: parseFloat(document.getElementById('vrSellThr').value)
     }
   };
+}
+
+// ============ 策略表（保存/加载策略） ============
+const STRATEGY_TYPE_LABEL = {
+  rate: 'MACD速率', cross: 'MACD金叉', bar: 'MACD柱', triple: '三指标共振', macdRsi: 'MACD+RSI',
+  macdKdj: 'MACD+KDJ', kdjBottom: 'KDJ抄底', rsiKdjBottom: 'RSI+KDJ双底', kdjRsiOverSell: 'KDJ+RSI超卖',
+  rsiKdjDual: 'RSI+KDJ双确认', kdjJ: 'KDJ-J极值', rsiDual: 'RSI双线', rsiDivergence: 'RSI背离',
+  bollBreak: '布林带突破', bias: 'BIAS乖离', volBreakout: '放量突破', volPullback: '缩量回调',
+  volRatio: '量比异动', obv: 'OBV能量潮', vwap: 'VWAP', volShrink: '地量见地价',
+  volDivergence: '量价背离', vr: 'VR变异率'
+};
+
+// 收集当前页面所有配置为可持久化的 params
+function collectStrategyParams() {
+  const p = getParams();
+  const sp = getStrategyParams();
+  return {
+    strategy: document.getElementById('strategySelect').value,
+    macd: { fast: p.fast, slow: p.slow, signal: p.signal },
+    sp: sp
+  };
+}
+
+// 生成策略参数摘要文本（表格展示用）
+function strategySummary(params) {
+  const p = params || {};
+  const sp = p.sp || {};
+  const macd = p.macd || {};
+  const vp = sp.volParams || {};
+  const parts = [];
+  if (macd.fast) parts.push(`MACD(${macd.fast},${macd.slow},${macd.signal})`);
+  if (sp.positionRatio) parts.push(`仓位${(sp.positionRatio * 100).toFixed(0)}%`);
+  if (sp.takeProfit) parts.push(`止盈${sp.takeProfit}%`);
+  if (sp.stopLoss) parts.push(`止损${sp.stopLoss}%`);
+  const filters = [];
+  if (sp.flatFilter && sp.flatFilter.enabled) filters.push('横盘');
+  if (sp.fastSell && sp.fastSell.enabled) filters.push('快卖');
+  if (sp.ma5Sell && sp.ma5Sell.enabled) filters.push('MA5');
+  if (sp.buyStrength && sp.buyStrength.enabled) filters.push('强度');
+  if (sp.trendFilter && sp.trendFilter.enabled) filters.push('趋势');
+  if (filters.length) parts.push(`过滤:${filters.join('/')}`);
+  if (vp.volN) parts.push(`量能N${vp.volN}/倍${vp.volMult}`);
+  return parts.join(' | ') || '默认';
+}
+
+function showStrategyError(msg) {
+  const el = document.getElementById('strategyNameInput');
+  const hint = document.createElement('div');
+  hint.className = 'error';
+  hint.style.display = 'block';
+  hint.style.color = '#e8453c';
+  hint.style.fontSize = '12px';
+  hint.style.marginTop = '4px';
+  hint.id = 'strategyErr';
+  const old = document.getElementById('strategyErr');
+  if (old) old.remove();
+  if (el && el.parentElement) el.parentElement.appendChild(hint);
+  hint.textContent = msg;
+}
+
+// 保存当前配置为策略
+async function saveCurrentStrategy() {
+  const name = (document.getElementById('strategyNameInput').value || '').trim();
+  if (!name) { showStrategyError('请先填写策略名称'); return; }
+  const params = collectStrategyParams();
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy_name: name, strategy_type: params.strategy, params: params })
+    });
+    const data = await res.json();
+    if (data.error) { showStrategyError(data.error); return; }
+    document.getElementById('strategyNameInput').value = '';
+    loadStrategies();
+    showStrategyError(data.message || '已保存');
+    document.getElementById('strategyErr').style.color = '#34a853';
+  } catch (e) {
+    showStrategyError('保存失败: ' + e.message);
+  }
+}
+
+// 加载已保存的策略列表到表格
+async function loadStrategies() {
+  const body = document.getElementById('strategyTableBody');
+  try {
+    const res = await fetch(`${API_BASE}/api/strategies`);
+    const data = await res.json();
+    if (data.error) { body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#e8453c;">${data.error}</td></tr>`; return; }
+    const list = data.data || [];
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">暂无已保存的策略，填写名称后点击「保存当前策略」</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(s => {
+      const label = STRATEGY_TYPE_LABEL[s.strategy_type] || s.strategy_type;
+      return `
+        <tr>
+          <td>${s.id}</td>
+          <td style="text-align:left;font-weight:600;">${s.strategy_name}</td>
+          <td>${label}</td>
+          <td style="text-align:left;font-size:11px;">${strategySummary(s.params)}</td>
+          <td>${s.updated_at || s.created_at || ''}</td>
+          <td style="text-align:center;white-space:nowrap;">
+            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="loadStrategy(${s.id})">加载</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="updateStrategy(${s.id})">更新</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;color:#e8453c;border-color:#e8453c;" onclick="deleteStrategy(${s.id})">删除</button>
+          </td>
+        </tr>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#e8453c;">加载策略列表失败（请确认已运行 python server.py）: ${e.message}</td></tr>`;
+  }
+}
+
+// 根据 DOM id 设置表单值（自动识别 checkbox）
+function setFormField(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.type === 'checkbox') el.checked = !!value;
+  else if (value != null) el.value = value;
+}
+
+// 把保存的参数填回表单
+function applyStrategyParams(params) {
+  const p = params || {};
+  if (p.strategy) { document.getElementById('strategySelect').value = p.strategy; updateStrategyDesc(); }
+  if (p.macd) {
+    setFormField('fastPeriod', p.macd.fast);
+    setFormField('slowPeriod', p.macd.slow);
+    setFormField('signalPeriod', p.macd.signal);
+  }
+  const sp = p.sp || {};
+  setFormField('initCapital', sp.initCapital);
+  setFormField('positionRatio', sp.positionRatio);
+  setFormField('maxAdds', sp.maxAdds);
+  setFormField('takeProfit', sp.takeProfit);
+  setFormField('partialRatio', sp.partialRatio);
+  setFormField('stopLoss', sp.stopLoss);
+  setFormField('enableT1', sp.enableT1);
+  if (sp.feeCfg) {
+    setFormField('commissionRate', sp.feeCfg.commissionRate);
+    setFormField('commissionMin', sp.feeCfg.commissionMin);
+    setFormField('stampTax', sp.feeCfg.stampTax);
+    setFormField('transferFee', sp.feeCfg.transferFee);
+  }
+  if (sp.flatFilter) {
+    setFormField('enableFlatFilter', sp.flatFilter.enabled);
+    setFormField('flatWindow', sp.flatFilter.window);
+    setFormField('flatThreshold', sp.flatFilter.threshold);
+  }
+  if (sp.fastSell) {
+    setFormField('enableFastSell', sp.fastSell.enabled);
+    setFormField('fastSellThreshold', sp.fastSell.threshold);
+  }
+  if (sp.ma5Sell) setFormField('enableMa5Sell', sp.ma5Sell.enabled);
+  setFormField('enableAboveWaterOnly', sp.aboveWaterOnly);
+  if (sp.buyStrength) {
+    setFormField('enableBuyStrength', sp.buyStrength.enabled);
+    setFormField('buyStrengthThreshold', sp.buyStrength.threshold);
+  }
+  if (sp.trendFilter) {
+    setFormField('enableTrendFilter', sp.trendFilter.enabled);
+    setFormField('trendMode', sp.trendFilter.mode);
+  }
+  if (sp.volParams) {
+    setFormField('volN', sp.volParams.volN);
+    setFormField('volBreakN', sp.volParams.volBreakN);
+    setFormField('volMult', sp.volParams.volMult);
+    setFormField('shrinkMult', sp.volParams.shrinkMult);
+    setFormField('volTrendN', sp.volParams.volTrendN);
+    setFormField('volRatioBuy', sp.volParams.volRatioBuy);
+    setFormField('vrN', sp.volParams.vrN);
+    setFormField('vrBuyThr', sp.volParams.vrBuyThr);
+    setFormField('vrSellThr', sp.volParams.vrSellThr);
+  }
+}
+
+// 加载策略到表单（覆盖当前参数）
+async function loadStrategy(id) {
+  try {
+    const res = await fetch(`${API_BASE}/api/strategies`);
+    const data = await res.json();
+    const item = (data.data || []).find(s => s.id === id);
+    if (!item) { showStrategyError('未找到该策略'); return; }
+    applyStrategyParams(item.params);
+    document.getElementById('strategyNameInput').value = item.strategy_name;
+    showStrategyError(`已加载策略「${item.strategy_name}」，参数已填入表单`);
+    document.getElementById('strategyErr').style.color = '#34a853';
+  } catch (e) {
+    showStrategyError('加载失败: ' + e.message);
+  }
+}
+
+// 用当前表单参数覆盖更新已有策略
+async function updateStrategy(id) {
+  const name = (document.getElementById('strategyNameInput').value || '').trim();
+  const params = collectStrategyParams();
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, strategy_name: name || undefined, params: params })
+    });
+    const data = await res.json();
+    if (data.error) { showStrategyError(data.error); return; }
+    loadStrategies();
+    showStrategyError('策略已更新');
+    document.getElementById('strategyErr').style.color = '#34a853';
+  } catch (e) {
+    showStrategyError('更新失败: ' + e.message);
+  }
+}
+
+// 删除策略
+async function deleteStrategy(id) {
+  if (!confirm('确定删除该策略？')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    });
+    const data = await res.json();
+    if (data.error) { showStrategyError(data.error); return; }
+    loadStrategies();
+    showStrategyError('策略已删除');
+    document.getElementById('strategyErr').style.color = '#34a853';
+  } catch (e) {
+    showStrategyError('删除失败: ' + e.message);
+  }
 }
 
 function fmt(v, decimals = 2) { return Number(v).toFixed(decimals); }
@@ -1690,7 +2387,12 @@ function runBacktest() {
   const stock = window.__backtestStock || { code: '', name: '' };
 
   if (fast >= slow) { showError('快线周期必须小于慢线周期'); return; }
-  if (ohlc.length < slow + 2) { showError(`数据不足，至少需要 ${slow + 2} 个交易日，当前 ${ohlc.length} 条`); return; }
+  // 量能策略按量能参数校验最少数据量（VR周期/突破周期/趋势均线取最大），否则按MACD慢线
+  const VOL_STRATEGIES = ['volBreakout', 'volPullback', 'volRatio', 'obv', 'vwap', 'volShrink', 'volDivergence', 'vr'];
+  const minDays = VOL_STRATEGIES.includes(strategy)
+    ? Math.max(sp.volParams.volN, sp.volParams.volBreakN, sp.volParams.volTrendN, sp.volParams.vrN) + 2
+    : slow + 2;
+  if (ohlc.length < minDays) { showError(`数据不足，至少需要 ${minDays} 个交易日，当前 ${ohlc.length} 条`); return; }
   if (sp.positionRatio <= 0 || sp.positionRatio > 1) { showError('买入仓位比例必须在 0~1 之间'); return; }
   if (sp.initCapital < 1000) { showError('初始资金至少1000元'); return; }
   if (sp.flatFilter.enabled && sp.flatFilter.window < 2) { showError('横盘观察天数至少为2'); return; }
@@ -1698,8 +2400,33 @@ function runBacktest() {
 
   try {
     const closes = ohlc.map(k => k.close);
-    const macdResult = calcMACD(closes, fast, slow, signal);
-    const signals = generateSignals(strategy, macdResult, ohlc, sp.flatFilter, sp.fastSell, sp.ma5Sell, sp.aboveWaterOnly, sp.buyStrength, sp.trendFilter);
+    // 优先使用数据库基于全量历史预计算的 MACD（值与行情软件一致，零重算）；
+    // 仅当用户自定义参数不在库中预置组（12/26/9、6/12/5、3/8/3、10/20/7）时，
+    // 才用含预热窗口的完整序列计算（EMA 起点一致），再裁剪回用户范围
+    const paramGroups = [
+      ['', 12, 26, 9], ['_6_12_5', 6, 12, 5], ['_3_8_3', 3, 8, 3], ['_10_20_7', 10, 20, 7],
+    ];
+    let macdResult = null;
+    const hit = paramGroups.find(([, f, s, g]) => f === fast && s === slow && g === signal);
+    if (hit && ohlc[0] && ohlc[0][`macd_dif${hit[0]}`] != null) {
+      const suffix = hit[0];
+      macdResult = {
+        dif: ohlc.map(k => k[`macd_dif${suffix}`]),
+        dea: ohlc.map(k => k[`macd_dea${suffix}`]),
+        macd: ohlc.map(k => k[`macd_hist${suffix}`]),
+      };
+    }
+    if (!macdResult) {
+      const allCloses = window.__backtestAllCloses || closes;
+      const warmup = window.__backtestWarmup || 0;
+      const macdAll = calcMACD(allCloses, fast, slow, signal);
+      macdResult = {
+        dif: macdAll.dif.slice(warmup),
+        dea: macdAll.dea.slice(warmup),
+        macd: macdAll.macd.slice(warmup),
+      };
+    }
+    const signals = generateSignals(strategy, macdResult, ohlc, sp.flatFilter, sp.fastSell, sp.ma5Sell, sp.aboveWaterOnly, sp.buyStrength, sp.trendFilter, sp.volParams);
     const result = runBacktestEngine(ohlc, macdResult, signals, sp);
     const metrics = calcMetrics(ohlc, result);
 
@@ -1710,7 +2437,7 @@ function runBacktest() {
 }
 
 function renderResults(ohlc, macdResult, result, m, cfg) {
-  const { trades, equity } = result;
+  const { trades, equity, cycles = [] } = result;
   const labels = ohlc.map(k => k.date);
   const strategyName = document.querySelector(`#strategySelect option[value="${cfg.strategy}"]`).textContent.split('（')[0];
 
@@ -1718,13 +2445,21 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
   const winRateClass = m.winRate >= 0.5 ? 'up' : 'down';
   const ddClass = 'warn';
 
+  // 量能策略：摘要展示量能参数；非量能策略保持 MACD 参数
+  const VOL_STRATEGIES = ['volBreakout', 'volPullback', 'volRatio', 'obv', 'vwap', 'volShrink', 'volDivergence', 'vr'];
+  const isVolStrategy = VOL_STRATEGIES.includes(cfg.strategy);
+  const vp = cfg.sp.volParams;
+  const indicatorParams = isVolStrategy
+    ? `量能参数: 均量${vp.volN}日 / 放量≥${vp.volMult}倍 / 缩量≤${vp.shrinkMult}倍 / 突破${vp.volBreakN}日 / 趋势MA${vp.volTrendN} / 量比${vp.volRatioBuy} / VR(${vp.vrN},${vp.vrBuyThr},${vp.vrSellThr})`
+    : `MACD参数: (${cfg.fast}, ${cfg.slow}, ${cfg.signal})`;
+
   document.getElementById('resultArea').innerHTML = `
     <div class="panel">
       <h2>回测结果摘要</h2>
       <div class="hint" style="margin-bottom:8px">
         <strong style="color:#1a73e8">${cfg.stock.name} (${cfg.stock.code})</strong> |
         策略: ${strategyName} |
-        MACD参数: (${cfg.fast}, ${cfg.slow}, ${cfg.signal}) |
+        ${indicatorParams} |
         初始资金: ${fmtMoney(m.initCapital)}元 |
         仓位: ${cfg.sp.positionRatio * 100}% / 加仓上限${cfg.sp.maxAdds}次 / 止盈${cfg.sp.takeProfit}%卖${cfg.sp.partialRatio * 100}% / 止损${cfg.sp.stopLoss}% |
         T+1: ${cfg.sp.enableT1 ? '启用' : '关闭'} |
@@ -1797,6 +2532,34 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
         <div class="chart-canvas-wrap" style="height:260px"><canvas id="btEquity"></canvas></div>
       </div>
 
+      <details open>
+        <summary>波段收益明细（共 ${cycles.length} 个波段，已平仓 ${cycles.filter(c => !c.open).length} 个）</summary>
+        <table>
+          <thead>
+            <tr><th>#</th><th>建仓日期</th><th>清仓日期</th><th>持仓天数</th><th>买入均价</th><th>卖出价</th><th>净盈亏</th><th>收益率</th><th>结果</th><th>清仓原因</th></tr>
+          </thead>
+          <tbody>
+            ${cycles.map((c, i) => {
+              const cls = c.open ? 'open-cell' : (c.pnl > 0 ? 'positive' : 'negative');
+              const label = c.open ? '持仓中' : (c.pnl > 0 ? '盈利' : '亏损');
+              return `
+              <tr>
+                <td>${i + 1}</td>
+                <td>${c.startDate}</td>
+                <td>${c.endDate}</td>
+                <td>${c.holdDays}</td>
+                <td>${fmt(c.avgBuyPrice)}</td>
+                <td>${fmt(c.sellPrice)}</td>
+                <td class="${cls}">${c.pnl >= 0 ? '+' : '-'}${fmtMoney(Math.abs(c.pnl))}</td>
+                <td class="${cls}">${fmtPct(c.returnPct)}</td>
+                <td class="${cls}" style="font-weight:600">${label}</td>
+                <td style="text-align:left">${c.reason}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </details>
+
       <details>
         <summary>交易明细（共 ${trades.length} 笔，点击展开）</summary>
         <table>
@@ -1823,7 +2586,7 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
   `;
 
   // 渲染K线（带买卖点）
-  drawCandlestickWithSignals('btKline', ohlc, labels, trades, 'btKline');
+  drawCandlestickWithSignals('btKline', ohlc, labels, trades, macdResult, 'btKline');
   // 渲染资金曲线
   renderEquityCurve('btEquity', labels, equity, m.initCapital, 'btEquity');
 }
@@ -1834,6 +2597,8 @@ updateStrategyDesc();
 // ============ 页面初始化 ============
 // 加载本地库 stock_info 股票目录（下拉+输入联想）
 loadStockCatalog();
+// 加载已保存的策略列表（策略表）
+loadStrategies();
 (function initRangeUI() {
   // 时间段模式默认值：起始=2年前，结束=今天（与「最近2年」对齐）
   const today = new Date();

@@ -149,7 +149,7 @@ if __name__ == "__main__":
     print(f"\n自定义参数(6,12,5) 明日价格: {tomorrow_price}")
     print(f"  明日  -> DIF: {result2['tomorrow']['dif']}, DEA: {result2['tomorrow']['dea']}, MACD: {result2['tomorrow']['macd']}")
 
-    # 示例3：价格区间扫描（只显示关键行）
-    print(f"\n价格区间扫描 (99.5 ~ 102.0, 步长0.5):")
+    # 示例3：价格区间计算（只显示关键行）
+    print(f"\n价格区间计算 (99.5 ~ 102.0, 步长0.5):")
     df = predict_macd_range(history, (99.5, 102.0), step=0.5)
     print(df.to_string(index=False))

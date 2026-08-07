@@ -344,9 +344,7 @@ class DataFetcher:
         """
         from database.db import (
             get_kline,
-            get_kline_max_date,
-            get_kline_min_date,
-            get_stock_list_date,
+            get_kline_range_info,
             save_kline,
         )
 
@@ -359,10 +357,11 @@ class DataFetcher:
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
 
-        # 1. 查询库中已有数据范围，确定需要拉取的缺口
-        max_date_str = get_kline_max_date(symbol)
-        min_date_str = get_kline_min_date(symbol)
-        list_date_str = get_stock_list_date(symbol)
+        # 1. 一次查询库中已有数据范围（最大/最小日期 + 上市日期），确定需要拉取的缺口
+        info = get_kline_range_info(symbol)
+        max_date_str = info["max_date"]
+        min_date_str = info["min_date"]
+        list_date_str = info["list_date"]
 
         gaps: list[tuple[str, str]] = []  # (fetch_start, fetch_end)，均为 YYYYMMDD
         if max_date_str is None:

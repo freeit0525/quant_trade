@@ -1,12 +1,14 @@
 """数据库 CRUD 模块 - 策略、回测结果、交易记录、净值的读写"""
 
 import math
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
 import pandas as pd
 import psycopg2
+import psycopg2.pool
 from psycopg2.extras import execute_values
 
 from config.settings import DatabaseConfig
@@ -14,9 +16,38 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 默认配置的连接池（远程库建连开销大，复用连接可显著提速）
+_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool(config: DatabaseConfig | None) -> Optional[psycopg2.pool.ThreadedConnectionPool]:
+    """获取默认配置的连接池；传入自定义 config 时返回 None（走直连）
+
+    线程安全：ThreadedConnectionPool 内部有锁，适配 ThreadingHTTPServer 多线程。
+    """
+    global _pool
+    if config is not None:
+        return None
+    with _pool_lock:
+        if _pool is None:
+            from config.settings import Settings
+            cfg = Settings().database
+            try:
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    1, 8,
+                    host=cfg.host, port=cfg.port, dbname=cfg.dbname,
+                    user=cfg.user, password=cfg.password,
+                )
+                logger.info("数据库连接池已创建 (min=1, max=8)")
+            except Exception as e:
+                logger.error("创建数据库连接池失败: %s", e)
+                _pool = None
+        return _pool
+
 
 def get_connection(config: DatabaseConfig | None = None):
-    """获取数据库连接"""
+    """获取数据库连接（直连，供单次使用场景）"""
     if config is None:
         from config.settings import Settings
         config = Settings().database
@@ -31,7 +62,33 @@ def get_connection(config: DatabaseConfig | None = None):
 
 @contextmanager
 def db_cursor(config: DatabaseConfig | None = None):
-    """数据库游标上下文管理器，自动提交和关闭"""
+    """数据库游标上下文管理器，自动提交和关闭（默认配置走连接池）"""
+    pool = _get_pool(config)
+    if pool is not None:
+        conn = None
+        try:
+            conn = pool.getconn()
+            # 池中连接可能已被服务端断开，失效则丢弃重取
+            if conn.closed:
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = pool.getconn()
+            cur = conn.cursor()
+            try:
+                yield cur
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cur.close()
+        finally:
+            if conn is not None:
+                pool.putconn(conn)
+        return
+
     conn = get_connection(config)
     try:
         cur = conn.cursor()
@@ -387,6 +444,29 @@ def get_stock_list_date(symbol: str, config: DatabaseConfig | None = None) -> Op
     if row is None or row[0] is None:
         return None
     return row[0].strftime("%Y-%m-%d")
+
+
+def get_kline_range_info(symbol: str, config: DatabaseConfig | None = None) -> dict:
+    """一次查询返回库中该股票的 [max_date, min_date, list_date]
+
+    合并多次独立查询，减少往返（配合连接池使用）。
+    Returns:
+        {"max_date": 'YYYY-MM-DD'|None, "min_date": ..., "list_date": ...}
+    """
+    with db_cursor(config) as cur:
+        cur.execute(
+            """SELECT
+                   (SELECT MAX(trade_date) FROM market_data.daily_kline WHERE symbol = %s),
+                   (SELECT MIN(trade_date) FROM market_data.daily_kline WHERE symbol = %s),
+                   (SELECT list_date FROM market_data.stock_info WHERE symbol = %s)""",
+            (symbol, symbol, symbol),
+        )
+        row = cur.fetchone()
+    return {
+        "max_date": row[0].strftime("%Y-%m-%d") if row and row[0] else None,
+        "min_date": row[1].strftime("%Y-%m-%d") if row and row[1] else None,
+        "list_date": row[2].strftime("%Y-%m-%d") if row and row[2] else None,
+    }
 
 
 def get_kline(

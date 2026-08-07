@@ -210,7 +210,7 @@
   <div class="panel">
     <div class="tabs">
       <div class="tab active" onclick="switchTab('single')">单价格计算</div>
-      <div class="tab" onclick="switchTab('range')">价格区间扫描</div>
+      <div class="tab" onclick="switchTab('range')">价格区间计算</div>
     </div>
 
     <!-- 单价格 -->
@@ -246,7 +246,7 @@
         </div>
       </div>
       <div class="actions">
-        <button onclick="calculateRange()">扫描计算</button>
+        <button onclick="calculateRange()">区间计算</button>
       </div>
     </div>
 
@@ -1074,14 +1074,16 @@ function renderMacdChart(canvasId, labels, difData, deaData, macdData, predictLa
     plugins.push({
       id: 'rangeBox_' + instanceKey,
       afterDatasetsDraw(chart) {
-        const { scales, ctx, data } = chart;
-        const xScale = scales.x;
+        const { scales, ctx } = chart;
         const yScale = scales.y;
         const barIndex = rangeBox.barIndex;
-        const x = xScale.getPixelForValue(barIndex);
+        // 取实际绘制的MACD柱宽度和中心X，保证虚线框与柱宽一致
+        const meta = chart.getDatasetMeta(0);
+        const barEl = meta.data[barIndex];
+        const x = barEl.x;
+        const barWidth = barEl.width;
         const yMax = yScale.getPixelForValue(rangeBox.maxValue);
         const yMin = yScale.getPixelForValue(rangeBox.minValue);
-        const barWidth = xScale.width / data.labels.length * 0.5;
 
         ctx.save();
         // 半透明黑色填充
@@ -1317,7 +1319,7 @@ function rateAnalysisText(result, ctx, todayRate, tomorrowRate) {
   return '分析: ' + tips.join('；');
 }
 
-// ============ 区间扫描 ============
+// ============ 区间计算 ============
 function calculateRange() {
   clearError();
   try {
@@ -1336,7 +1338,7 @@ function calculateRange() {
     const histMacdOnly = calcMACD(history, fast, slow, signal);
     const todayMacdHist = histMacdOnly.macd[histMacdOnly.macd.length - 1];       // 今日MACD
 
-    // 扫描价格区间，计算每个价格对应的预测日MACD和变化速率
+    // 遍历价格区间，计算每个价格对应的预测日MACD和变化速率
     const rows = [];
     let minMacd = Infinity, maxMacd = -Infinity;
     let minMacdPrice = low, maxMacdPrice = high;
@@ -1399,8 +1401,6 @@ function calculateRange() {
     let rowsHtml = rows.map(r => `
       <tr>
         <td>${fmt(r.price, 2)}</td>
-        <td class="${colorClass(r.dif)}">${fmt(r.dif)}</td>
-        <td class="${colorClass(r.dea)}">${fmt(r.dea)}</td>
         <td class="${colorClass(r.macd)}">${fmt(r.macd)}</td>
         <td class="${colorClass(r.rate)}">${r.rate >= 0 ? '+' : ''}${fmt(r.rate)}</td>
       </tr>
@@ -1410,7 +1410,7 @@ function calculateRange() {
 
     document.getElementById('resultArea').innerHTML = `
       <div class="panel">
-        <h2>价格区间扫描结果</h2>
+        <h2>价格区间计算结果</h2>
         <div class="hint">参数: (${fast}, ${slow}, ${signal}) | 预测日: ${ctx.predictDate} | 价格区间: ${fmt(low, 2)} ~ ${fmt(high, 2)} | MACD范围: ${fmt(minMacd)} ~ ${fmt(maxMacd)}</div>
         <div class="result-grid">
           <div class="result-card">
@@ -1426,7 +1426,7 @@ function calculateRange() {
         ${buildChartHtml('macdChartRange', `MACD走势图（黑色虚线框 = 价格区间对应MACD范围）`, '中点价预测柱')}
         <table>
           <thead>
-            <tr><th>${predictLabel}价格</th><th>DIF</th><th>DEA</th><th>MACD柱</th><th>变化速率</th></tr>
+            <tr><th>${predictLabel}价格</th><th>MACD柱</th><th>变化速率</th></tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
         </table>
