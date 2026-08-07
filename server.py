@@ -12,6 +12,7 @@
 
 import argparse
 import json
+import math
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,33 @@ def _json_default(obj):
     if isinstance(obj, (set, tuple)):
         return list(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _sanitize(obj):
+    """递归将 NaN/Infinity 等非有限浮点值转为 None，保证 JSON 合法（JSON 不允许 NaN）"""
+    import math
+
+    if isinstance(obj, float):
+        return None if not math.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
+def _same_value(a, b):
+    """两个值是否视为相同（NaN 视为相等，用于刷新前后对比）"""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    try:
+        if math.isnan(float(a)) and math.isnan(float(b)):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return a == b
 
 
 def _stock_name(code: str) -> str:
@@ -83,6 +111,12 @@ class QuantHandler(SimpleHTTPRequestHandler):
         try:
             if parsed.path == "/api/kline":
                 self.api_kline(params)
+            elif parsed.path == "/api/kline_db":
+                self.api_kline_db(params)
+            elif parsed.path == "/api/stock_list":
+                self.api_stock_list(params)
+            elif parsed.path == "/api/stock_catalog":
+                self.api_stock_catalog(params)
             elif parsed.path == "/api/search":
                 self.api_search(params)
             elif parsed.path == "/api/stock_info":
@@ -91,6 +125,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_sources(params)
             elif parsed.path == "/api/fetch":
                 self.api_fetch(params)
+            elif parsed.path == "/api/refresh_today":
+                self.api_refresh_today(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -139,6 +175,77 @@ class QuantHandler(SimpleHTTPRequestHandler):
             {"data": records, "stock": {"code": code, "name": _stock_name(code)}},
             200,
         )
+
+    def api_kline_db(self, params: dict):
+        """仅从本地数据库读取日K线数据（不联网拉取）
+
+        参数: code=股票代码, beg=开始日期YYYYMMDD/YYYY-MM-DD, end=结束日期（缺省为全部）
+        返回: { data: [{date,open,close,high,low,volume,amount,turnover,...}], stock: {code,name} }
+        """
+        code = (params.get("code") or "").strip()
+        if not code:
+            self._send_json({"error": "缺少参数 code"}, 400)
+            return
+
+        from database.db import get_kline
+
+        beg = (params.get("beg") or "").strip() or "1900-01-01"
+        end = (params.get("end") or "").strip() or "2100-01-01"
+        logger.info("API /api/kline_db: code=%s beg=%s end=%s", code, beg, end)
+        df = get_kline(code, beg, end)
+        if df.empty:
+            self._send_json({"error": f"库中暂无 {code} 的K线数据"}, 404)
+            return
+
+        records = df.to_dict(orient="records")
+        for r in records:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+        self._send_json(
+            {"data": records, "stock": {"code": code, "name": _stock_name(code)}},
+            200,
+        )
+
+    def api_stock_list(self, params: dict):
+        """返回库中已有K线数据的股票列表（供下拉选择）"""
+        from database.db import db_cursor
+
+        with db_cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT k.symbol, COALESCE(s.name, '') AS name
+                   FROM market_data.daily_kline k
+                   LEFT JOIN market_data.stock_info s ON s.symbol = k.symbol
+                   ORDER BY k.symbol"""
+            )
+            rows = cur.fetchall()
+
+        stocks = [{"Code": r[0], "Name": r[1]} for r in rows]
+        self._send_json({"data": stocks}, 200)
+
+    def api_stock_catalog(self, params: dict):
+        """返回 stock_info 表全部A股（代码+名称），供「下拉+输入」联想使用
+
+        可选参数: keyword=模糊过滤（代码或名称，可空则返回全部，限量5000）
+        """
+        keyword = (params.get("keyword") or "").strip()
+        from database.db import db_cursor
+
+        sql = """SELECT symbol, COALESCE(name, '') AS name, market
+                 FROM market_data.stock_info"""
+        args: list = []
+        if keyword:
+            sql += " WHERE symbol LIKE %s OR name LIKE %s"
+            args = [f"%{keyword}%", f"%{keyword}%"]
+        sql += " ORDER BY symbol LIMIT 5000"
+
+        with db_cursor() as cur:
+            cur.execute(sql, args)
+            rows = cur.fetchall()
+
+        stocks = [
+            {"Code": r[0], "Name": r[1], "Market": r[2]}
+            for r in rows
+        ]
+        self._send_json({"data": stocks}, 200)
 
     def api_search(self, params: dict):
         """搜索A股代码/名称（本地数据库 stock_info 模糊查询）"""
@@ -367,6 +474,13 @@ class QuantHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "缺少参数 end"}, 400)
             return
 
+        # 数据预览分页参数（page 从 1 开始，每页 page_size 条）
+        try:
+            page = max(1, int(params.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        page_size = 20
+
         logger.info("API /api/fetch: source=%s code=%s beg=%s end=%s", source, code, beg, end)
         fetcher = DataFetcher()
 
@@ -385,11 +499,9 @@ class QuantHandler(SimpleHTTPRequestHandler):
             kline = kline.drop(columns=[c for c in ff.columns if c != "date"])
             merged = pd.concat([kline, merged.drop(columns=["date"])], axis=1)
             saved = save_kline(merged, code)
-            # 统一返回统计与预览（范围取库中全部记录）
+            # 统一返回统计与预览（范围取库中全部记录，分页返回）
             full = get_kline(code, "1900-01-01", "2100-01-01")
-            preview = full.head(5).to_dict(orient="records")
-            for r in preview:
-                r["date"] = r["date"].strftime("%Y-%m-%d")
+            preview, page, total_pages = self._slice_page(full, page, page_size)
             self._send_json(
                 {"ok": True, "source": "sina", "code": code, "name": _stock_name(code),
                  "list_date": get_stock_list_date(code),
@@ -398,6 +510,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
                  "last": full["date"].max().strftime("%Y-%m-%d"),
                  "last_close": float(full.iloc[-1]["close"]) if not full.empty else None,
                  "saved": saved, "preview": preview,
+                 "page": page, "page_size": page_size, "total_pages": total_pages,
                  "message": f"资金流已更新 {saved} 条（{ff['date'].min().date()} ~ {ff['date'].max().date()}）"},
                 200,
             )
@@ -437,14 +550,12 @@ class QuantHandler(SimpleHTTPRequestHandler):
             df = fetcher._merge_fund_flow(df, code)
             saved = save_kline(df, code)
 
-        # 从库返回统计与预览
+        # 从库返回统计与预览（分页返回）
         full = get_kline(code, beg, end)
         if full.empty:
             self._send_json({"error": f"入库后仍未获取到 {code} 的K线数据"}, 404)
             return
-        preview = full.head(5).to_dict(orient="records")
-        for r in preview:
-            r["date"] = r["date"].strftime("%Y-%m-%d")
+        preview, page, total_pages = self._slice_page(full, page, page_size)
         self._send_json(
             {"ok": True, "source": source, "code": code, "name": _stock_name(code),
              "list_date": get_stock_list_date(code),
@@ -452,11 +563,157 @@ class QuantHandler(SimpleHTTPRequestHandler):
              "first": full["date"].min().strftime("%Y-%m-%d"),
              "last": full["date"].max().strftime("%Y-%m-%d"),
              "last_close": float(full.iloc[-1]["close"]),
-             "saved": saved, "preview": preview},
+             "saved": saved, "preview": preview,
+             "page": page, "page_size": page_size, "total_pages": total_pages},
+            200,
+        )
+
+    def api_refresh_today(self, params: dict):
+        """强制刷新库中股票的当天数据（重拉当天日K并覆盖入库）
+
+        背景：增量拉取在库中已有当天数据时不再重拉，盘中拉取的快照不会随行情
+        更新。此接口绕过增量逻辑，强制重拉当天并覆盖库中当天行。
+
+        参数: code=股票代码(可选，省略时刷新库中所有股票), source=数据源(默认auto)
+        返回: {ok, code, name, source, before, after, changed, message}
+        """
+        import pandas as pd
+
+        code = (params.get("code") or "").strip()
+        source = (params.get("source") or "auto").strip() or "auto"
+        if not code:
+            self.api_refresh_today_all(source)
+            return
+        if source in ("sina", "tdx", "akshare"):
+            source = "auto"  # 资金流/分钟K线/akshare 不适用，回退自动
+
+        from database.db import get_kline
+        from data.fetcher import DataFetcher
+
+        # 刷新前：库中今天的行
+        today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+        before_df = get_kline(code, today_str, today_str)
+        before = before_df.to_dict(orient="records")
+        for r in before:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+
+        try:
+            df = DataFetcher().refresh_today(code, source)
+        except Exception as e:
+            logger.exception("刷新当天 %s 失败: %s", code, e)
+            self._send_json({"error": f"刷新失败: {e}"}, 500)
+            return
+        if df.empty:
+            self._send_json(
+                {"error": f"{code} 今天（{today_str}）非交易日或数据源暂无当天数据，未刷新"},
+                404,
+            )
+            return
+
+        after = df.to_dict(orient="records")
+        for r in after:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+        used = str(df["used_source"].iloc[0]) if "used_source" in df.columns else source
+
+        # 前后对比（NaN 视为相同，不列为变化）
+        fields = ["open", "high", "low", "close", "volume", "amount",
+                  "turnover", "amplitude", "pct_change"]
+        changed = {}
+        if before:
+            for f in fields:
+                if not _same_value(before[0].get(f), after[0].get(f)):
+                    changed[f] = {"before": before[0].get(f), "after": after[0].get(f)}
+
+        diff_parts = []
+        if before and before[0].get("close") is not None and after[0].get("close") is not None:
+            diff_parts.append(f"收盘 {before[0]['close']:.2f} → {after[0]['close']:.2f}")
+        if before and before[0].get("amplitude") is not None and after[0].get("amplitude") is not None:
+            diff_parts.append(f"振幅 {before[0]['amplitude']:.2f}% → {after[0]['amplitude']:.2f}%")
+        message = f"已用 {used} 源刷新 {code} 当天数据（{after[0]['date']}）"
+        if diff_parts:
+            message += "：" + "，".join(diff_parts)
+        elif before:
+            message += "：与库中原有数据一致"
+
+        self._send_json(
+            {"ok": True, "code": code, "name": _stock_name(code),
+             "source": used, "before": before[0] if before else None,
+             "after": after[0], "changed": changed, "message": message},
+            200,
+        )
+
+    def api_refresh_today_all(self, source: str):
+        """批量刷新库中所有股票的当天数据（/api/refresh_today 未传 code 时调用）"""
+        import pandas as pd
+
+        from database.db import db_cursor, get_kline
+        from data.fetcher import DataFetcher
+
+        with db_cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT k.symbol
+                   FROM market_data.daily_kline k
+                   ORDER BY k.symbol"""
+            )
+            symbols = [r[0] for r in cur.fetchall()]
+        if not symbols:
+            self._send_json({"error": "日线库中暂无股票数据"}, 404)
+            return
+
+        today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+        fields = ["open", "high", "low", "close", "volume", "amount",
+                  "turnover", "amplitude", "pct_change"]
+        fetcher = DataFetcher()
+        items = []
+        for sym in symbols:
+            item = {"code": sym, "name": _stock_name(sym), "date": today_str}
+            try:
+                df = fetcher.refresh_today(sym, source)
+                if df.empty:
+                    item["error"] = "今天非交易日或数据源暂无当天数据"
+                    items.append(item)
+                    continue
+                after = df.to_dict(orient="records")[0]
+                after["date"] = after["date"].strftime("%Y-%m-%d")
+                item["source"] = str(df["used_source"].iloc[0]) if "used_source" in df.columns else source
+                item["after"] = after
+                before_df = get_kline(sym, today_str, today_str)
+                if not before_df.empty:
+                    before = before_df.to_dict(orient="records")[0]
+                    before["date"] = before["date"].strftime("%Y-%m-%d")
+                    item["before"] = before
+                    changed = {}
+                    for f in fields:
+                        if not _same_value(before.get(f), after.get(f)):
+                            changed[f] = {"before": before.get(f), "after": after.get(f)}
+                    item["changed"] = changed
+            except Exception as e:
+                logger.exception("批量刷新 %s 当天数据失败: %s", sym, e)
+                item["error"] = f"刷新失败: {e}"
+            items.append(item)
+
+        ok_count = sum(1 for it in items if not it.get("error"))
+        fail_count = len(items) - ok_count
+        self._send_json(
+            {"ok": True, "mode": "all", "total": len(items),
+             "ok_count": ok_count, "fail_count": fail_count,
+             "items": items,
+             "message": f"共刷新 {len(items)} 只：成功 {ok_count} 只，失败 {fail_count} 只"},
             200,
         )
 
     # ---------- 工具 ----------
+
+    def _slice_page(self, df, page: int, page_size: int):
+        """把完整数据框按页切片，返回 (本页记录, 实际页码, 总页数)"""
+        total = len(df)
+        total_pages = max(1, math.ceil(total / page_size))
+        page = min(max(1, page), total_pages)
+        start = (page - 1) * page_size
+        rows = df.iloc[start:start + page_size].to_dict(orient="records")
+        for r in rows:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+        return rows, page, total_pages
 
     def _send_cors_headers(self):
         """允许 file:// 页面或任意来源跨域访问 API"""
@@ -472,7 +729,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _send_json(self, obj: dict, status: int = 200):
-        body = json.dumps(obj, ensure_ascii=False, default=_json_default).encode("utf-8")
+        body = json.dumps(_sanitize(obj), ensure_ascii=False, default=_json_default).encode("utf-8")
         try:
             self.send_response(status)
             self._send_cors_headers()
@@ -495,7 +752,7 @@ def main():
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), QuantHandler)
     print(f"量化工具服务已启动: http://127.0.0.1:{args.port}/")
-    print(f"功能入口: /（index.html）, /backtest.html, /macd.html")
+    print(f"功能入口: /（index.html）, /kline.html, /backtest.html, /macd.html")
     print(f"数据API: /api/kline, /api/search （浏览器拉数据时自动入库）")
     try:
         server.serve_forever()

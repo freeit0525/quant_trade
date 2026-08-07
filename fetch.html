@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>股票数据拉取</title>
+<link rel="stylesheet" href="stock-picker.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -91,6 +92,14 @@
   th { background: #f8f9fa; color: #666; font-weight: 600; }
   th:first-child, td:first-child { text-align: left; }
   .legend { font-size: 12px; color: #999; margin-top: 8px; }
+  .pagination { display: flex; align-items: center; gap: 10px; margin-top: 10px; justify-content: center; }
+  .pagination button {
+    background: #1a73e8; color: #fff; border: none; padding: 6px 14px;
+    border-radius: 4px; font-size: 13px; cursor: pointer; transition: background 0.2s;
+  }
+  .pagination button:hover { background: #1557b0; }
+  .pagination button:disabled { background: #ccc; cursor: not-allowed; }
+  .page-info { font-size: 12px; color: #666; font-family: Consolas, monospace; }
 </style>
 </head>
 <body>
@@ -105,33 +114,65 @@
   <div class="panel">
     <h2>股票与数据范围</h2>
     <div class="row">
-      <div class="field" style="flex:2">
-        <label>股票代码 / 名称</label>
-        <input type="text" id="stockInput" placeholder="例如: 600000 或 浦发银行" autocomplete="off">
+      <div class="field" style="flex:0 0 320px;">
+        <label>股票（可输入筛选 / 下拉选择）</label>
+        <div id="stockPicker"></div>
       </div>
-      <div class="field" style="flex:0 0 auto;">
-        <label>数据范围</label>
-        <select id="rangeMode" style="width:auto; min-width:130px;">
-          <option value="all">上市至今（全量）</option>
-          <option value="recent2y" selected>最近 2 年</option>
-          <option value="recent1y">最近 1 年</option>
-          <option value="recent6m">最近 6 个月</option>
-          <option value="period">自定义时间段</option>
-        </select>
-      </div>
-      <div class="field" style="flex:0 0 auto; display:none;" id="periodRow">
-        <label>起止日期</label>
-        <div style="display:flex; gap:6px; align-items:center;">
-          <input type="date" id="begDate" style="width:140px;">
-          <span style="color:#999;">至</span>
-          <input type="date" id="endDate" style="width:140px;">
-        </div>
-      </div>
-      <div class="field" style="flex:0 0 auto;">
-        <button id="fetchBtn" onclick="doFetch()">拉取数据</button>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
+        <button id="fetchBtn" onclick="doFetch()">拉取2年数据</button>
+        <button class="secondary" id="refreshTodayBtn" onclick="refreshToday()">刷新当天数据</button>
       </div>
     </div>
-    <div class="hint" id="rangeHint">默认拉取最近 2 年（约 500 个交易日）</div>
+
+    <!-- 数据范围模式切换 -->
+    <div class="row" style="align-items:center; margin-top:4px;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="recent" checked onchange="onRangeModeChange()"> 最近
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="all" onchange="onRangeModeChange()"> 自上市以后
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最近模式：数量 + 单位 -->
+    <div id="recentModeRow" class="row">
+      <div class="field" style="flex:0 0 120px;">
+        <label>数量</label>
+        <input type="number" id="rangeCount" value="2" min="1" oninput="updateRangeUI()">
+      </div>
+      <div class="field" style="flex:0 0 120px;">
+        <label>单位</label>
+        <select id="rangeUnit" onchange="updateRangeUI()">
+          <option value="day">天</option>
+          <option value="month">月</option>
+          <option value="quarter">季度</option>
+          <option value="year" selected>年</option>
+        </select>
+      </div>
+      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px;">≈ 500 个交易日</div>
+    </div>
+
+    <!-- 时间段模式：起止日期 -->
+    <div id="periodModeRow" class="row" style="display:none;">
+      <div class="field" style="flex:0 0 200px;">
+        <label>起始日期</label>
+        <input type="date" id="begDate">
+      </div>
+      <div class="field" style="flex:0 0 200px;">
+        <label>结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+    </div>
+
+    <div class="hint" id="rangeHint">输入6位代码或名称，自动拉取最近 2 年（约 500 个交易日）日线数据（数据源：东方财富）。「刷新当天数据」用于盘中拉取后当天收盘价/振幅等未更新的情况，强制重拉今天并覆盖库中原值；不选择股票时直接刷新库中所有股票的当天数据。</div>
   </div>
 
   <!-- 数据源选择 -->
@@ -148,19 +189,35 @@
   <div class="panel" id="resultPanel" style="display:none;">
     <h2>拉取结果</h2>
     <div class="result-grid" id="resultStats"></div>
-    <h2 style="margin-top:16px;">数据预览（前 5 行）</h2>
+    <h2 style="margin-top:16px;">数据预览</h2>
     <table id="previewTable"></table>
+    <div class="pagination">
+      <button id="prevPrevBtn" onclick="previewPage(-1)" disabled>上一页</button>
+      <span id="previewPageInfo" class="page-info"></span>
+      <button id="nextPrevBtn" onclick="previewPage(1)" disabled>下一页</button>
+    </div>
   </div>
 
   <div class="error" id="errorBox"></div>
   <div class="okmsg" id="okBox"></div>
+
+  <!-- 当天数据刷新结果 -->
+  <div class="panel" id="refreshPanel" style="display:none;">
+    <h2>当天数据刷新结果</h2>
+    <div class="result-grid" id="refreshStats"></div>
+    <table id="refreshTable"></table>
+  </div>
 </div>
 
+<script src="stock-picker.js"></script>
 <script>
 // ============ 配置 ============
 const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
   ? 'http://127.0.0.1:8000' : '';
-const UNIT_DAYS = { recent2y: 760, recent1y: 400, recent6m: 200 };
+
+// 单位 → 交易日估算（A股约：1月≈22天，1季度≈66天，1年≈250天）
+const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
+const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
 
 const SOURCE_META = {
   auto:      { name: '自动选择', type: 'K线+资金流' },
@@ -174,6 +231,8 @@ const SOURCE_META = {
 };
 
 let selectedSource = 'auto';
+let lastFetch = null;    // 最近一次拉取请求信息（分页翻页复用）
+let currentPage = 1;     // 数据预览当前页
 
 // ============ 工具 ============
 function showError(msg) {
@@ -188,6 +247,60 @@ function showOk(msg) {
   el.textContent = msg;
   document.getElementById('errorBox').style.display = 'none';
 }
+// ============ 数据范围配置（与策略回测一致） ============
+// 最小历史数据条数下限（保证指标计算有冗余）
+function getMinHistoryDays() {
+  return 36;
+}
+
+// 最近模式：估算的交易日数（应用最小下限）
+function estimateTradingDays() {
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  const raw = count * (UNIT_TRADING_DAYS[unit] || 1);
+  return Math.max(raw, getMinHistoryDays());
+}
+
+// 当前选中的模式
+function getRangeMode() {
+  const el = document.querySelector('input[name="rangeMode"]:checked');
+  return el ? el.value : 'recent';
+}
+
+// 模式切换
+function onRangeModeChange() {
+  const mode = getRangeMode();
+  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
+  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
+  updateRangeUI();
+}
+
+// 更新按钮文案和提示
+function updateRangeUI() {
+  const mode = getRangeMode();
+  const btn = document.getElementById('fetchBtn');
+  const hint = document.getElementById('rangeHint');
+  if (mode === 'all') {
+    btn.textContent = '拉取全部数据';
+    hint.textContent = '输入6位代码或名称，拉取自上市以来的全部日线数据（数据源：东方财富）';
+    return;
+  }
+  if (mode === 'period') {
+    btn.textContent = '拉取时间段数据';
+    hint.textContent = '选择起止日期后点击拉取';
+    return;
+  }
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  const raw = count * (UNIT_TRADING_DAYS[unit] || 1);
+  const days = estimateTradingDays();
+  const minDays = getMinHistoryDays();
+  const extended = days > raw ? `（已扩展至最小 ${minDays} 条）` : '';
+  btn.textContent = selectedSource === 'sina' ? '补资金流' : `拉取 ${count} ${UNIT_LABEL[unit]} 数据`;
+  document.getElementById('recentHint').textContent = `≈ ${days} 个交易日${extended}`;
+  hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（数据源：东方财富）`;
+}
+
 function dateToYYYYMMDD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -207,8 +320,12 @@ async function resolveCode(input) {
   return { code: list[0].Code, name: list[0].Name };
 }
 
-async function buildRange(code) {
-  const mode = document.getElementById('rangeMode').value;
+function buildRange(code) {
+  const mode = getRangeMode();
+  if (mode === 'all') {
+    // 自上市以后：A股最早上市1990-12，覆盖全部历史
+    return { beg: '19900101', end: dateToYYYYMMDD(new Date()) };
+  }
   if (mode === 'period') {
     const b = document.getElementById('begDate').value.replace(/-/g, '');
     const e = document.getElementById('endDate').value.replace(/-/g, '');
@@ -216,19 +333,12 @@ async function buildRange(code) {
     if (b > e) throw new Error('起始日期不能晚于结束日期');
     return { beg: b, end: e };
   }
-  if (mode === 'all') {
-    // 全量: 从库表上市日期拉至今日
-    const res = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
-    const data = await res.json();
-    if (data.error) throw new Error(`无法获取上市日期: ${data.error}`);
-    if (!data.list_date) throw new Error(`库中暂无 ${code} 的上市日期，无法全量拉取`);
-    return { beg: data.list_date.replace(/-/g, ''), end: dateToYYYYMMDD(new Date()) };
-  }
-  const days = UNIT_DAYS[mode];
-  const end = new Date();
-  const beg = new Date();
-  beg.setDate(beg.getDate() - days);
-  return { beg: dateToYYYYMMDD(beg), end: dateToYYYYMMDD(end) };
+  // 最近模式：交易日约占自然日 5/7，加 30 天节假日缓冲
+  const tradingDays = estimateTradingDays();
+  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+  const begDate = new Date();
+  begDate.setDate(begDate.getDate() - naturalDays);
+  return { beg: dateToYYYYMMDD(begDate), end: dateToYYYYMMDD(new Date()) };
 }
 
 // ============ 数据源探测 ============
@@ -293,38 +403,81 @@ function selectSource(key, enabled) {
   if (key === 'tdx') { showError('通达信接口用于分钟级K线（分钟MACD功能开发中），日线拉取请选择其他数据源'); return; }
   selectedSource = key;
   document.querySelectorAll('.source-card').forEach(c => c.classList.toggle('selected', c.dataset.key === key));
-  const btn = document.getElementById('fetchBtn');
-  btn.textContent = key === 'sina' ? '补资金流' : '拉取数据';
-  const hint = document.getElementById('rangeHint');
   if (key === 'sina') {
-    hint.textContent = '新浪接口仅提供资金流数据，将更新库中该股票已有K线的资金流字段';
-  } else if (document.getElementById('rangeMode').value === 'all') {
-    hint.textContent = '全量拉取：从库表上市日期拉至今日，一次入库后仅增量更新';
+    document.getElementById('rangeHint').textContent = '新浪接口仅提供资金流数据，将更新库中该股票已有K线的资金流字段';
   } else {
-    hint.textContent = '默认拉取最近 2 年（约 500 个交易日）';
+    updateRangeUI();
+  }
+}
+
+// ============ 股票目录加载（可搜索下拉，数据来自本地库 stock_info） ============
+async function loadStockCatalog() {
+  try {
+    const res = await fetch(`${API_BASE}/api/stock_catalog`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const stocks = data.data || [];
+    const picker = document.getElementById('stockPicker');
+    StockPicker.init(picker, stocks);
+    if (stocks.length === 0) {
+      document.getElementById('rangeHint').textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
+    }
+  } catch (e) {
+    const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
+      ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
+      : '';
+    showError('加载股票目录失败: ' + e.message + hint);
   }
 }
 
 // ============ 拉取 ============
+// 解析当前选中的股票：6位代码直接使用，名称走本地库联想匹配
+async function resolveStockInput() {
+  const pickerEl = document.getElementById('stockPicker');
+  const picked = StockPicker.getValue(pickerEl);
+  const input = StockPicker.getInput(pickerEl);
+  if (!picked && !input) throw new Error('请选择股票或输入代码/名称');
+  let code, name;
+  if (picked) {
+    code = picked.code;
+    name = picked.name;
+  } else if (/^\d{6}$/.test(input)) {
+    code = input;
+  } else {
+    const m = input.match(/[（(](\d{6})[)）]/);
+    if (m) { code = m[1]; name = input.replace(/\s*[（(]\d{6}[)）]\s*$/, '').trim(); }
+  }
+  if (!code) {
+    // 名称 → 代码（从本地 stock_info 联想匹配）
+    const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
+    const data = await res.json();
+    const list = data.data || [];
+    if (!list.length) throw new Error(`未找到 "${input}" 对应的股票`);
+    const match = list.find(r => r.Name === input) || list[0];
+    code = match.Code;
+    name = match.Name;
+  }
+  return { code, name };
+}
+
 async function doFetch() {
   showError(''); document.getElementById('errorBox').style.display = 'none';
   document.getElementById('okBox').style.display = 'none';
-  const input = document.getElementById('stockInput').value.trim();
-  if (!input) { showError('请输入股票代码或名称'); return; }
 
   const fetchBtn = document.getElementById('fetchBtn');
   fetchBtn.disabled = true;
   const oldText = fetchBtn.textContent;
   fetchBtn.textContent = '拉取中...';
   try {
-    const { code, name } = await resolveCode(input);
-    const range = await buildRange(code);
+    const { code, name } = await resolveStockInput();
+    const range = buildRange(code);
     const url = `${API_BASE}/api/fetch?source=${encodeURIComponent(selectedSource)}` +
       `&code=${code}&beg=${range.beg}&end=${range.end}`;
     const res = await fetch(url);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
+    lastFetch = { url, nameHint: name };
     renderResult(data, name);
     showOk(data.message || '');
     document.getElementById('resultPanel').style.display = 'block';
@@ -343,6 +496,124 @@ function fmtMoney(v) {
   if (abs >= 1e8) return (v / 1e8).toFixed(2) + '亿';
   if (abs >= 1e4) return (v / 1e4).toFixed(0) + '万';
   return v.toFixed(0);
+}
+
+function fmtVol(v) {
+  if (v === null || v === undefined || isNaN(v)) return '-';
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(2) + '万';
+  return v.toFixed(0);
+}
+
+// ============ 当天数据刷新 ============
+const REFRESH_FIELDS = [
+  { key: 'open', label: '开盘', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'high', label: '最高', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'low', label: '最低', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'close', label: '收盘', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'pct_change', label: '涨跌幅%', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'amplitude', label: '振幅%', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'turnover', label: '换手率%', fmt: v => v == null ? '-' : Number(v).toFixed(2) },
+  { key: 'volume', label: '成交量', fmt: v => fmtVol(v) },
+];
+
+// 强制刷新当天数据：选定了股票刷新该股；未选择则刷新库中所有股票的当天数据
+async function refreshToday() {
+  showError(''); document.getElementById('errorBox').style.display = 'none';
+  document.getElementById('okBox').style.display = 'none';
+
+  const btn = document.getElementById('refreshTodayBtn');
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '刷新中...';
+  try {
+    // 资金流(sina)/分钟线(tdx)/akshare 源不适用刷新，回退自动
+    const src = (selectedSource === 'sina' || selectedSource === 'tdx' || selectedSource === 'akshare')
+      ? 'auto' : selectedSource;
+    let url = `${API_BASE}/api/refresh_today?source=${encodeURIComponent(src)}`;
+    let single = false;
+    const pickerEl = document.getElementById('stockPicker');
+    const picked = StockPicker.getValue(pickerEl);
+    const input = StockPicker.getInput(pickerEl);
+    if (picked || (input && input.trim())) {
+      // 有选择/输入 → 刷新该股
+      const { code } = await resolveStockInput();
+      url += `&code=${code}`;
+      single = true;
+    }
+    // 未选择/输入 → 不带 code，刷新库中所有股票当天数据
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    renderRefresh(data, single);
+    showOk(data.message || '已刷新');
+    document.getElementById('refreshPanel').style.display = 'block';
+  } catch (e) {
+    showError('刷新失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+const REFRESH_LABEL = Object.fromEntries(REFRESH_FIELDS.map(f => [f.key, f.label]));
+
+function fmtCell(v) {
+  if (v === null || v === undefined || isNaN(v)) return '-';
+  if (typeof v === 'number') {
+    if (Math.abs(v) >= 1e4) return fmtVol(v);
+    return Number(v).toFixed(2);
+  }
+  return v;
+}
+
+function renderRefresh(data, single) {
+  if (!single && data.mode === 'all') { renderRefreshAll(data); return; }
+  const after = data.after || {};
+  const before = data.before || {};
+  document.getElementById('refreshStats').innerHTML = `
+    <div class="result-card"><h3>股票</h3><div class="value">${data.code} ${data.name || ''}</div></div>
+    <div class="result-card"><h3>数据源</h3><div class="value">${data.source || '-'}</div></div>
+    <div class="result-card"><h3>交易日期</h3><div class="value">${after.date || '-'}</div></div>
+    <div class="result-card"><h3>状态</h3><div class="value" style="color:#34a853;">已刷新</div></div>`;
+  const rows = REFRESH_FIELDS.map(f => {
+    const b = f.fmt ? f.fmt(before[f.key]) : (before[f.key] == null ? '-' : before[f.key]);
+    const a = f.fmt ? f.fmt(after[f.key]) : (after[f.key] == null ? '-' : after[f.key]);
+    const changed = String(b) !== String(a);
+    const cls = changed ? ' style="color:#1a73e8;font-weight:700;"' : '';
+    return `<tr><td style="text-align:left;">${f.label}</td><td>${b}</td><td${cls}>${a}</td></tr>`;
+  }).join('');
+  document.getElementById('refreshTable').innerHTML =
+    `<thead><tr><th style="text-align:left;">字段</th><th>刷新前</th><th>刷新后</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+// 批量刷新结果：每只股票一行，展示变化摘要/错误
+function renderRefreshAll(data) {
+  document.getElementById('refreshStats').innerHTML = `
+    <div class="result-card"><h3>股票数量</h3><div class="value">${data.total}</div></div>
+    <div class="result-card"><h3>成功</h3><div class="value" style="color:#34a853;">${data.ok_count}</div></div>
+    <div class="result-card"><h3>失败</h3><div class="value" style="color:#ea4335;">${data.fail_count}</div></div>
+    <div class="result-card"><h3>交易日期</h3><div class="value">${(data.items && data.items[0] && data.items[0].date) || '-'}</div></div>`;
+  const rows = (data.items || []).map(it => {
+    let status;
+    if (it.error) {
+      status = `<span style="color:#ea4335;">${it.error}</span>`;
+    } else if (it.changed && Object.keys(it.changed).length) {
+      const chg = Object.entries(it.changed).map(([k, c]) =>
+        `${REFRESH_LABEL[k] || k}: ${fmtCell(c.before)} → ${fmtCell(c.after)}`).join('；');
+      status = `<span style="color:#1a73e8;">${chg}</span>`;
+    } else {
+      status = '<span style="color:#666;">无变化</span>';
+    }
+    return `<tr>
+      <td style="text-align:left;">${it.code} ${it.name || ''}</td>
+      <td>${it.source || '-'}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('refreshTable').innerHTML =
+    `<thead><tr><th style="text-align:left;">股票</th><th>数据源</th><th>刷新结果</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
 function renderResult(data, nameHint) {
@@ -374,43 +645,64 @@ function renderResult(data, nameHint) {
       <td style="color:${r.main_net_inflow >= 0 ? '#e8453c' : '#34a853'};">${r.main_net_inflow != null ? fmtMoney(r.main_net_inflow) : '-'}</td>
     </tr>`).join('');
   table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+
+  // 分页信息（后端 /api/fetch 分页返回）
+  currentPage = data.page || 1;
+  const total = data.total != null ? data.total : (data.preview || []).length;
+  const totalPages = data.total_pages || 1;
+  if (lastFetch) lastFetch.totalPages = totalPages;
+  document.getElementById('previewPageInfo').textContent = `第 ${currentPage} / ${totalPages} 页 · 共 ${total} 条`;
+  document.getElementById('prevPrevBtn').disabled = currentPage <= 1;
+  document.getElementById('nextPrevBtn').disabled = currentPage >= totalPages;
+
   const saveHint = data.saved ? `，本次入库 ${data.saved} 条` : '';
   document.getElementById('sourceLegend').textContent =
     `已使用接口：${SOURCE_META[data.source] ? SOURCE_META[data.source].name : data.source}${saveHint}。数据已存入数据库，可到回测/MACD页面直接使用。`;
 }
 
+// 数据预览翻页（复用最近一次拉取的请求，附加 page 参数）
+async function previewPage(delta) {
+  if (!lastFetch) return;
+  const next = currentPage + delta;
+  if (next < 1) return;
+  const prevBtn = document.getElementById('prevPrevBtn');
+  const nextBtn = document.getElementById('nextPrevBtn');
+  prevBtn.disabled = true;
+  nextBtn.disabled = true;
+  try {
+    const sep = lastFetch.url.includes('?') ? '&' : '?';
+    const res = await fetch(`${lastFetch.url}${sep}page=${next}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    renderResult(data, lastFetch.nameHint);
+  } catch (e) {
+    showError('加载分页失败: ' + e.message);
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= (lastFetch.totalPages || 1);
+  }
+}
+
 // ============ 初始化 ============
-document.getElementById('rangeMode').addEventListener('change', async function () {
-  document.getElementById('periodRow').style.display = this.value === 'period' ? 'flex' : 'none';
-  const hint = document.getElementById('rangeHint');
-  if (this.value === 'period') {
-    hint.textContent = '选择起止日期后点击拉取';
-    return;
-  }
-  if (this.value === 'all') {
-    hint.textContent = '全量拉取：从库表上市日期拉至今日，一次入库后仅增量更新';
-    const input = document.getElementById('stockInput').value.trim();
-    if (!/^\d{6}$/.test(input)) return; // 未输入具体代码时，点击拉取再查询
-    hint.textContent = '查询上市日期中...';
-    try {
-      const res = await fetch(`${API_BASE}/api/stock_info?code=${input}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      hint.textContent = data.list_date
-        ? `该股上市时间 ${data.list_date}，将从上市至今全量拉取（一次入库，之后仅增量）`
-        : `库中暂无 ${input} 的上市日期，无法全量拉取`;
-    } catch (e) {
-      hint.textContent = '上市日期查询失败: ' + e.message;
-    }
-    return;
-  }
-  hint.textContent = selectedSource === 'sina' ? '' : '默认拉取最近 2 年（约 500 个交易日）';
-});
-// 默认起止日期
+// 默认起止日期：起始=2年前，结束=今天（与「最近2年」对齐）
 const today = new Date();
-const begDefault = new Date(); begDefault.setDate(begDefault.getDate() - 760);
-document.getElementById('begDate').value = begDefault.toISOString().slice(0, 10);
-document.getElementById('endDate').value = today.toISOString().slice(0, 10);
+const begDefault = new Date(); begDefault.setDate(begDefault.getDate() - 730);
+const fmtD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+document.getElementById('begDate').value = fmtD(begDefault);
+document.getElementById('endDate').value = fmtD(today);
+// 初始化按钮文案和提示
+updateRangeUI();
+
+// 加载本地库 stock_info 股票目录（下拉+输入联想）
+loadStockCatalog();
+
+// 股票输入框回车触发拉取（组件内 input）
+document.addEventListener('keydown', (e) => {
+  const picker = document.getElementById('stockPicker');
+  if (e.key === 'Enter' && picker && picker.contains(e.target)) {
+    e.preventDefault();
+    doFetch();
+  }
+});
 
 // 初始不自动探测数据源，显示未检测占位，点击「重新检测可用性」再探测
 renderIdleSources();

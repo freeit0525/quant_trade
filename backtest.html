@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <title>策略回测工具</title>
-<style>
+<link rel="stylesheet" href="stock-picker.css">
+  <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -13,7 +14,11 @@
     line-height: 1.6;
   }
   .container { max-width: 1200px; margin: 0 auto; }
-  h1 { font-size: 22px; margin-bottom: 16px; color: #1a73e8; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
   .panel {
     background: #fff;
     border-radius: 8px;
@@ -96,18 +101,22 @@
   summary { cursor: pointer; font-size: 13px; color: #1a73e8; user-select: none; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="stock-picker.js"></script>
 </head>
 <body>
 <div class="container">
-  <h1>策略回测工具</h1>
+  <div class="top">
+    <h1>策略回测工具</h1>
+    <a class="back" href="index.html">← 返回入口</a>
+  </div>
 
-  <!-- 股票数据拉取 -->
+  <!-- 股票与数据范围 -->
   <div class="panel">
-    <h2>股票数据拉取（A股）</h2>
+    <h2>股票与数据范围</h2>
     <div class="row">
-      <div class="field" style="flex:2">
-        <label>股票代码 / 名称</label>
-        <input type="text" id="stockInput" placeholder="例如: 600000 或 浦发银行" autocomplete="off">
+      <div class="field" style="flex:0 0 320px;">
+        <label>股票（可输入筛选 / 下拉选择）</label>
+        <div id="stockPicker"></div>
       </div>
       <div class="field" style="flex:0 0 auto; align-self:flex-end;">
         <button id="fetchBtn" onclick="fetchStock()">拉取2年数据</button>
@@ -124,6 +133,9 @@
           </label>
           <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
             <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="all" onchange="onRangeModeChange()"> 自上市以后
           </label>
         </div>
       </div>
@@ -159,7 +171,7 @@
       </div>
     </div>
 
-    <div id="stockInfo" class="hint">输入6位代码或名称，自动拉取最近2年日线数据（数据源：东方财富）</div>
+    <div id="stockInfo" class="hint">正在加载库内股票列表...</div>
   </div>
 
   <!-- 策略与回测参数 -->
@@ -391,12 +403,27 @@ function calcMACD(closes, fast, slow, signal) {
 // 若以 file:// 方式直接打开页面，则 API 指向 http://127.0.0.1:8000（需服务已启动）
 const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
   ? 'http://127.0.0.1:8000' : '';
-async function searchStock(keyword) {
-  const url = `${API_BASE}/api/search?keyword=${encodeURIComponent(keyword)}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.error) { throw new Error(data.error); }
-  return data.data || [];
+
+// 加载 stock_info 股票目录（可搜索下拉）
+async function loadStockCatalog() {
+  const infoEl = document.getElementById('stockInfo');
+  try {
+    const res = await fetch(`${API_BASE}/api/stock_catalog`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const stocks = data.data || [];
+    const picker = document.getElementById('stockPicker');
+    StockPicker.init(picker, stocks);
+    if (stocks.length === 0) {
+      infoEl.textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
+    }
+  } catch (e) {
+    const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
+      ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
+      : '';
+    showError('加载股票目录失败: ' + e.message + hint);
+    infoEl.textContent = '';
+  }
 }
 
 function getSecid(code) {
@@ -442,6 +469,11 @@ function updateRangeUI() {
   const mode = getRangeMode();
   const btn = document.getElementById('fetchBtn');
   const hint = document.getElementById('stockInfo');
+  if (mode === 'all') {
+    btn.textContent = '拉取全部数据';
+    hint.textContent = '输入6位代码或名称，拉取自上市以来的全部日K数据（数据源：东方财富）';
+    return;
+  }
   if (mode === 'recent') {
     const count = parseInt(document.getElementById('rangeCount').value) || 0;
     const unit = document.getElementById('rangeUnit').value;
@@ -454,7 +486,7 @@ function updateRangeUI() {
     hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（数据源：东方财富）`;
   } else {
     btn.textContent = '拉取时间段数据';
-    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K收盘价（数据源：东方财富）';
+    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K数据（数据源：东方财富）';
   }
 }
 
@@ -469,6 +501,10 @@ function dateToYYYYMMDD(d) {
 // 根据当前模式构造请求参数 { beg, end, lmt }
 function buildRangeParams() {
   const mode = getRangeMode();
+  if (mode === 'all') {
+    // 自上市以后：A股最早上市1990-12，覆盖全部历史
+    return { beg: '19900101', end: dateToYYYYMMDD(new Date()), lmt: 10000 };
+  }
   if (mode === 'period') {
     const begInput = document.getElementById('begDate').value;
     const endInput = document.getElementById('endDate').value;
@@ -483,33 +519,38 @@ function buildRangeParams() {
   const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
   const begDate = new Date();
   begDate.setDate(begDate.getDate() - naturalDays);
-  return { beg: dateToYYYYMMDD(begDate), end: '20500101', lmt: tradingDays };
+  return { beg: dateToYYYYMMDD(begDate), end: dateToYYYYMMDD(new Date()), lmt: tradingDays };
 }
 
 async function fetchStock() {
   clearError();
   const infoEl = document.getElementById('stockInfo');
-  const input = document.getElementById('stockInput').value.trim();
-  if (!input) { showError('请输入股票代码或名称'); return; }
+  const pickerEl = document.getElementById('stockPicker');
+  const picked = StockPicker.getValue(pickerEl);
+  const input = StockPicker.getInput(pickerEl);
+  if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
 
   infoEl.textContent = '正在拉取数据...';
   try {
-    let code, name, secid;
-    if (/^\d{6}$/.test(input)) {
+    let code, name;
+    if (picked) {
+      code = picked.code;
+      name = picked.name;
+    } else if (/^\d{6}$/.test(input)) {
       code = input;
-      secid = getSecid(code);
-      // 输入纯代码时也查询一次名称，用于展示 "名称 (代码)"
-      try {
-        const stocks = await searchStock(code);
-        if (stocks.length > 0) { name = stocks[0].Name; secid = stocks[0].QuoteID; }
-      } catch (e) { /* 名称查询失败不影响拉取 */ }
     } else {
-      const stocks = await searchStock(input);
-      if (stocks.length === 0) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
-      const match = stocks.find(r => r.Name === input) || stocks[0];
+      const m = input.match(/[（(](\d{6})[)）]/);
+      if (m) { code = m[1]; name = input.replace(/\s*[（(]\d{6}[)）]\s*$/, '').trim(); }
+    }
+    if (!code) {
+      // 名称 → 代码（从本地 stock_info 联想匹配）
+      const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
+      const data = await res.json();
+      const list = data.data || [];
+      if (!list.length) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
+      const match = list.find(r => r.Name === input) || list[0];
       code = match.Code;
       name = match.Name;
-      secid = match.QuoteID;
     }
 
     const range = buildRangeParams();
@@ -553,7 +594,7 @@ async function fetchStock() {
     // Failed to fetch 常见原因：本地服务(server.py)未启动，或端口被占用
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
       ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
-      : '（如遇CORS限制，可改用Python代理方案）';
+      : '';
     showError('拉取失败: ' + e.message + hint);
     infoEl.textContent = '';
   }
@@ -1790,12 +1831,9 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
 // 初始化策略描述
 updateStrategyDesc();
 
-// 股票输入框回车触发拉取
-document.getElementById('stockInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); fetchStock(); }
-});
-
 // ============ 页面初始化 ============
+// 加载本地库 stock_info 股票目录（下拉+输入联想）
+loadStockCatalog();
 (function initRangeUI() {
   // 时间段模式默认值：起始=2年前，结束=今天（与「最近2年」对齐）
   const today = new Date();
@@ -1807,6 +1845,14 @@ document.getElementById('stockInput').addEventListener('keydown', (e) => {
   // 初始化按钮文案和提示
   updateRangeUI();
 })();
+// 股票输入框回车触发拉取（组件内 input）
+document.addEventListener('keydown', (e) => {
+  const picker = document.getElementById('stockPicker');
+  if (e.key === 'Enter' && picker && picker.contains(e.target)) {
+    e.preventDefault();
+    fetchStock();
+  }
+});
 </script>
 </body>
 </html>

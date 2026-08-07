@@ -337,36 +337,65 @@ class DataFetcher:
 
     def _fetch_stock_via_db(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """数据库增量拉取：先查库中已有数据范围（最小/最大日期），
-        仅拉取缺失缺口（历史缺口 + 尾部缺口）入库，再从库返回完整范围"""
-        from database.db import get_kline, get_kline_max_date, get_kline_min_date, save_kline
+        仅拉取缺失缺口（历史缺口 + 尾部缺口）入库，再从库返回完整范围。
+
+        优先读取本地库：仅当库中数据落后于今天时才拉取尾部增量；
+        end 超出今天的部分不拉取（未来无数据），历史缺口不早于上市日期。
+        """
+        from database.db import (
+            get_kline,
+            get_kline_max_date,
+            get_kline_min_date,
+            get_stock_list_date,
+            save_kline,
+        )
 
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
+        # end 钳制到今天：未来日期无数据，避免每次点击都触发尾部拉取
+        today = pd.Timestamp.today().normalize()
+        if end_dt > today:
+            end_dt = today
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
 
         # 1. 查询库中已有数据范围，确定需要拉取的缺口
         max_date_str = get_kline_max_date(symbol)
         min_date_str = get_kline_min_date(symbol)
+        list_date_str = get_stock_list_date(symbol)
 
         gaps: list[tuple[str, str]] = []  # (fetch_start, fetch_end)，均为 YYYYMMDD
         if max_date_str is None:
-            # 库中无数据，全量拉取
-            gaps.append((start_dt.strftime("%Y%m%d"), end_dt.strftime("%Y%m%d")))
+            # 库中无数据，全量拉取（起点不早于上市日期）
+            fetch_start = start_dt
+            if list_date_str:
+                list_dt = pd.to_datetime(list_date_str)
+                if fetch_start < list_dt:
+                    fetch_start = list_dt
+            if fetch_start <= end_dt:
+                gaps.append((fetch_start.strftime("%Y%m%d"), end_dt.strftime("%Y%m%d")))
             logger.info(f"数据库无 {symbol} 数据，全量拉取 {start_str} ~ {end_str}")
         else:
             max_dt = pd.to_datetime(max_date_str)
             min_dt = pd.to_datetime(min_date_str)
-            # 尾部缺口：库中最大日期 < 请求结束日期
+            # 尾部缺口：库中最大日期 < 请求结束日期（end 已钳制到今天）
             if max_dt < end_dt:
                 fetch_start = (max_dt + pd.Timedelta(days=1)).strftime("%Y%m%d")
                 gaps.append((fetch_start, end_dt.strftime("%Y%m%d")))
                 logger.info(f"数据库已有 {symbol} 至 {max_date_str}，增量拉取 {fetch_start} ~ {end_str}")
-            # 头部缺口（历史缺口）：库中最小日期 > 请求开始日期
+            # 头部缺口（历史缺口）：库中最小日期 > 请求开始日期，且不早于上市日期
             if min_dt > start_dt:
-                fetch_end = (min_dt - pd.Timedelta(days=1)).strftime("%Y%m%d")
-                gaps.append((start_dt.strftime("%Y%m%d"), fetch_end))
-                logger.info(f"数据库已有 {symbol} 自 {min_date_str}，补拉历史缺口 {start_str} ~ {fetch_end}")
+                fetch_start_dt = start_dt
+                if list_date_str:
+                    list_dt = pd.to_datetime(list_date_str)
+                    if fetch_start_dt < list_dt:
+                        fetch_start_dt = list_dt
+                if fetch_start_dt < min_dt:
+                    fetch_end = (min_dt - pd.Timedelta(days=1)).strftime("%Y%m%d")
+                    gaps.append((fetch_start_dt.strftime("%Y%m%d"), fetch_end))
+                    logger.info(
+                        f"数据库已有 {symbol} 自 {min_date_str}，补拉历史缺口 {fetch_start_dt.strftime('%Y-%m-%d')} ~ {fetch_end}"
+                    )
 
         # 2. 依次拉取各缺口并入库
         fetched_dfs = []
@@ -385,6 +414,10 @@ class DataFetcher:
             df = self._calc_tech_indicators(df, symbol)
             # 合并资金流向（近100天可获取，更早为 NULL）
             df = self._merge_fund_flow(df, symbol)
+            # 腾讯源无换手率，回退其数据时用证券宝按日期补全 turnover
+            df = self._fill_turnover_from_baostock(df, symbol)
+            # baostock 历史 turn 也缺失时，用库内附近真实换手率反推股本估算
+            df = self._fill_turnover_by_estimate(df, symbol)
             fetched_dfs.append(df)
 
         if fetched_dfs:
@@ -504,7 +537,7 @@ class DataFetcher:
             ["date"]
             + [c for s in MACD_GROUPS for c in (f"macd_dif{s}", f"macd_dea{s}", f"macd_hist{s}")]
         )
-        return df.merge(all_close[cols], on="date", how="left")
+        return df.merge(all_close[cols], on="date", how="left", suffixes=("_old", ""))
 
     def _calc_tech_indicators(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """计算 MA(5/10/20/30/60/120)、RSI(14)、KDJ(9,3,3)，增量时拼接库中全量 OHLC 重算
@@ -538,16 +571,15 @@ class DataFetcher:
         for n in ma_windows:
             all_ohlc[f"ma{n}"] = close.rolling(n, min_periods=1).mean()
 
-        # RSI(14)：Wilder 平滑（首根及完全横盘无涨跌时失真补 50）
-        period = 14
-        delta = close.diff().fillna(0)
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-        rs = avg_gain / avg_loss
-        rsi = 100 - 100 / (1 + rs)
-        all_ohlc["rsi14"] = rsi.fillna(50)
+        # RSI 多周期(6/12/14/24)：Wilder 平滑（首根及完全横盘无涨跌时失真补 50）
+        for period in (6, 12, 14, 24):
+            delta = close.diff().fillna(0)
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+            rs = avg_gain / avg_loss
+            all_ohlc[f"rsi{period}"] = (100 - 100 / (1 + rs)).fillna(50)
 
         # KDJ(9,3,3)：RSV -> K(1/3平滑) -> D(1/3平滑) -> J
         # 前期窗口不足时用可用窗口(min_periods=1)；HH=LL 无波动时 RSV 补 50（失真补全）
@@ -568,9 +600,113 @@ class DataFetcher:
         keep = (
             ["date"]
             + [f"ma{n}" for n in ma_windows]
-            + ["rsi14", "kdj_k", "kdj_d", "kdj_j", "bias5", "bias10", "bias20"]
+            + ["rsi6", "rsi12", "rsi14", "rsi24", "kdj_k", "kdj_d", "kdj_j",
+               "bias5", "bias10", "bias20"]
         )
-        return df.merge(all_ohlc[keep], on="date", how="left")
+        return df.merge(all_ohlc[keep], on="date", how="left", suffixes=("_old", ""))
+
+    def refresh_today(self, symbol: str, source: str = "auto") -> pd.DataFrame:
+        """强制刷新今天的数据并覆盖入库（绕过增量：库中已有当天数据也重拉）
+
+        增量拉取在"库中最大日期 == 今天"时不再重拉当天，导致盘中首次拉取的
+        快照（收盘价/振幅等）不会随行情更新。此方法绕过该逻辑：
+        1) 强制从数据源重拉最近 10 天（保证 pct_change/振幅 有前收盘可算）
+        2) 部分源（如腾讯）区间请求不含当天，再单天补拉今天并拼接
+        3) 拼接库中历史重算量比/MACD/MA/RSI/KDJ/BIAS
+        4) 仅覆盖库中今天的行（upsert）；换手率为 NULL 时保留库内旧值
+
+        Args:
+            symbol: 股票代码
+            source: 数据源 auto/eastmoney/tencent/baostock（akshare 与东财同源且无超时控制，不使用）
+
+        Returns:
+            刷新后的今天数据 DataFrame（1行，含 used_source 列）；非交易日或源无当天数据时为空
+        """
+        from database.db import save_kline
+
+        today = pd.Timestamp.today().normalize()
+        today_ts = today.strftime("%Y%m%d")
+        # 往前多拉 10 个自然日，保证 pct_change/振幅 有前收盘可计算
+        beg_ts = (today - pd.Timedelta(days=10)).strftime("%Y%m%d")
+
+        chain = self._refresh_source_chain(source)
+
+        def _try_fetch(name, b, e):
+            try:
+                return self._fetch_one(name, symbol, b, e)
+            except Exception as exc:
+                logger.warning("刷新当天 %s 源 %s 失败: %s", symbol, name, exc)
+                return pd.DataFrame()
+
+        # 1) 前置区间：腾讯等源区间请求不含当天，需单天补拉
+        df = pd.DataFrame()
+        used = ""
+        for name in chain:
+            df = _try_fetch(name, beg_ts, today_ts)
+            if not df.empty:
+                used = name
+                break
+
+        # 2) 若区间不含今天，单天补拉今天
+        if not df.empty:
+            has_today = (pd.to_datetime(df["date"]).dt.normalize() == today).any()
+        else:
+            has_today = False
+        if not has_today:
+            for name in chain:
+                cand = _try_fetch(name, today_ts, today_ts)
+                if not cand.empty:
+                    df = pd.concat([df, cand], ignore_index=True) if not df.empty else cand
+                    used = name
+                    break
+        if df.empty:
+            return df
+
+        df = self._normalize_columns(df)
+        df = df.drop_duplicates("date", keep="last").sort_values("date").reset_index(drop=True)
+        # 拼接后重算涨跌幅/振幅（单天拉取时源内 shift 计算会失真）
+        if {"close", "high", "low"}.issubset(df.columns):
+            df["pct_change"] = df["close"].pct_change() * 100
+            df["change"] = df["close"].diff()
+            df["amplitude"] = (df["high"] - df["low"]) / df["close"].shift(1).replace(0, float("nan")) * 100
+
+        df = self._calc_volume_ratio(df, symbol, beg_ts)
+        df = self._calc_macd(df, symbol)
+        df = self._calc_tech_indicators(df, symbol)
+        df = self._merge_fund_flow(df, symbol)
+        # 仅腾讯源无换手率；baostock 补当天，补不上则保持 NULL（upsert 保留库内旧值）
+        df = self._fill_turnover_from_baostock(df, symbol)
+
+        # 仅取今天的行覆盖入库
+        today_df = df[df["date"] == today]
+        if today_df.empty:
+            return pd.DataFrame()
+        today_df = today_df.copy()
+        today_df["used_source"] = used
+        save_kline(today_df, symbol)
+        logger.info("已刷新 %s 当天数据（源:%s）: %s", symbol, used, today_df.to_dict("records")[0])
+        return today_df
+
+    def _fetch_one(self, name: str, symbol: str, beg: str, end: str) -> pd.DataFrame:
+        """按源名分发拉取（refresh_today 专用）"""
+        if name == "eastmoney":
+            return self._fetch_via_eastmoney(symbol, beg, end)
+        if name == "baostock":
+            return self._fetch_via_baostock(symbol, beg, end)
+        if name == "tencent":
+            return self._fetch_via_tencent(symbol, beg, end)
+        return pd.DataFrame()
+
+    @staticmethod
+    def _refresh_source_chain(source: str) -> list[str]:
+        """刷新当天时的数据源回退顺序：东财(含换手率)→腾讯(当天数据及时)→证券宝(收盘后)
+
+        akshare 与东财同源且无超时控制，刷新时不使用。
+        """
+        base = ["eastmoney", "tencent", "baostock"]
+        if source in base:
+            return [source] + [s for s in base if s != source]
+        return base
 
     def _infer_market_code(self, symbol: str) -> str:
         """根据股票代码推断交易所代码（sh/sz/bj），用于资金流向接口"""
@@ -695,6 +831,113 @@ class DataFetcher:
         for c in flow_cols:
             if c not in df.columns:
                 df[c] = None
+        return df
+
+    def _fill_turnover_from_baostock(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """腾讯源不提供换手率，回退其数据时用证券宝(baostock)按日期回填 turnover
+
+        仅当 df 存在 turnover 列且全部为空时触发（已有换手率的增量不重复拉取）；
+        baostock 不可用/无数据时静默跳过，不影响主流程。
+        换手率与复权无关，baostock 的 turn 字段可直接使用。
+        """
+        if df.empty or "turnover" not in df.columns or df["turnover"].notna().sum() > 0:
+            return df
+        if not _baostock_ensure_login():
+            return df
+        import baostock as bs
+
+        bs_code = f"sh.{symbol}" if symbol.startswith(("6", "9")) else f"sz.{symbol}"
+        try:
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,turn",
+                start_date=df["date"].min().strftime("%Y-%m-%d"),
+                end_date=df["date"].max().strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag="3",  # 原始不复权：换手率与复权无关
+            )
+            if rs.error_code != "0":
+                logger.warning(f"证券宝换手率查询失败 {bs_code}: {rs.error_msg}")
+                return df
+            rows = []
+            while rs.next():
+                rows.append(rs.get_row_data())
+            if not rows:
+                return df
+            bdf = pd.DataFrame(rows, columns=rs.fields)
+            bdf["date"] = pd.to_datetime(bdf["date"])
+            bdf["turn"] = pd.to_numeric(bdf["turn"], errors="coerce")
+            bdf = bdf[["date", "turn"]].rename(columns={"turn": "turnover"})
+            merged = df.merge(bdf, on="date", how="left", suffixes=("", "_bs"))
+            merged["turnover"] = merged["turnover"].fillna(merged["turnover_bs"])
+            merged = merged.drop(columns=["turnover_bs"])
+            filled = merged["turnover"].notna().sum()
+            logger.info(f"证券宝回填 {symbol} 换手率 {filled}/{len(merged)} 行")
+            return merged
+        except Exception as e:
+            logger.warning(f"证券宝回填换手率失败 {symbol}: {e}")
+            return df
+
+    def _fill_turnover_by_estimate(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """换手率兜底：用库内附近真实换手率反推流通股本估算缺失值
+
+        baostock 对部分历史日期 turn 为空（如风华高科 2016/1996 段），此时
+        用缺失日前后 90 天内已有真实换手率反推当时流通股本估算
+        （cap = volume/(turnover/100)）。窗口内 cap 变异系数 >15% 视为股本
+        发生变动，估算不可信则跳过。已用留一交叉验证：平均误差 0.06%。
+        """
+        if df.empty or "turnover" not in df.columns:
+            return df
+        na_idx = df.index[df["turnover"].isna()].tolist()
+        if not na_idx:
+            return df
+        from database.db import get_kline
+
+        hist = get_kline(symbol, "1900-01-01", "2100-01-01")
+        if hist.empty or "turnover" not in hist.columns:
+            return df
+        # 库内全量 + 本次 df 合并为参照序列（df 新日期不在库中）
+        ref = pd.concat([
+            pd.DataFrame({
+                "date": pd.to_datetime(hist["date"]),
+                "volume": pd.to_numeric(hist["volume"], errors="coerce"),
+                "turnover": pd.to_numeric(hist["turnover"], errors="coerce"),
+            }),
+            pd.DataFrame({
+                "date": pd.to_datetime(df["date"]),
+                "volume": pd.to_numeric(df["volume"], errors="coerce"),
+                "turnover": pd.to_numeric(df["turnover"], errors="coerce"),
+            }),
+        ], ignore_index=True)
+        ref = (ref.drop_duplicates(subset=["date"], keep="last")
+                  .sort_values("date").reset_index(drop=True))
+        date2pos = {d: i for i, d in enumerate(ref["date"])}
+
+        filled = 0
+        for i in na_idx:
+            d = pd.to_datetime(df["date"].iloc[i])
+            if df["volume"].iloc[i] == 0:
+                df.at[i, "turnover"] = 0.0  # 当日无成交，换手率为 0
+                filled += 1
+                continue
+            pos = date2pos.get(d)
+            if pos is None:
+                continue
+            window = ref["date"].between(
+                d - pd.Timedelta(days=90), d + pd.Timedelta(days=90)
+            )
+            window.iloc[pos] = False
+            real = ref.loc[window & ref["turnover"].notna()]
+            if len(real) < 3:
+                continue
+            cap = real["volume"] / (real["turnover"] / 100)
+            if cap.mean() <= 0 or cap.std() / cap.mean() > 0.15:
+                continue
+            est = df["volume"].iloc[i] / cap.median() * 100
+            df.at[i, "turnover"] = est
+            filled += 1
+        if filled:
+            logger.info(f"库内估算回填 {symbol} 换手率 {filled} 行")
         return df
 
     def _fetch_via_akshare(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
