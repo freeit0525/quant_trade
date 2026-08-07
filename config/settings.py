@@ -32,8 +32,8 @@ class DataSourceConfig:
     """数据源配置"""
     # 数据源类型：akshare / eastmoney(直连东财) / baostock(证券宝) / tushare
     source: Literal["akshare", "eastmoney", "baostock", "tushare"] = "akshare"
-    # tushare token（使用tushare时需要）
-    tushare_token: str = ""
+    # tushare token（使用tushare时需要），从 .env 的 TUSHARE_TOKEN 读取
+    tushare_token: str = os.getenv("TUSHARE_TOKEN", "")
     # 数据缓存目录
     cache_dir: str = "cache"
 

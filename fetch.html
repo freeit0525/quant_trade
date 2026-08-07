@@ -232,6 +232,14 @@ async function buildRange(code) {
 }
 
 // ============ 数据源探测 ============
+// 页面加载时不自动探测，由用户手动点击「重新检测可用性」触发
+function renderIdleSources() {
+  const keys = ['auto', 'akshare', 'eastmoney', 'tencent', 'sina', 'tushare', 'baostock', 'tdx'];
+  renderSourceCards(keys.map(k => ({ key: k, status: '', latency_ms: 0 })));
+  document.getElementById('sourceLegend').textContent =
+    '提示：点击上方「重新检测可用性」查看各接口连通状态；未检测时也可直接选择数据源，自动选择按 akshare→东财→证券宝→腾讯 顺序回退。';
+}
+
 async function loadSources() {
   const grid = document.getElementById('sourceGrid');
   const probeBtn = document.getElementById('probeBtn');
@@ -262,7 +270,8 @@ function renderSourceCards(sources, mode) {
     const isChecking = mode === 'placeholder' && s.key !== 'auto';
     const badge = isChecking ? '<span class="badge checking">检测中</span>'
       : s.status === 'ok' ? `<span class="badge ok">可用 ${s.latency_ms}ms</span>`
-      : `<span class="badge fail">不可用 ${s.latency_ms || 0}ms</span>`;
+      : s.status === 'fail' ? `<span class="badge fail">不可用 ${s.latency_ms || 0}ms</span>`
+      : '<span class="badge">未检测</span>';
     const detail = (!isChecking && s.status === 'fail' && s.detail)
       ? `<div class="s-desc" title="${s.detail}" style="color:#d93025;">${s.detail}</div>` : '';
     const card = document.createElement('div');
@@ -403,7 +412,8 @@ const begDefault = new Date(); begDefault.setDate(begDefault.getDate() - 760);
 document.getElementById('begDate').value = begDefault.toISOString().slice(0, 10);
 document.getElementById('endDate').value = today.toISOString().slice(0, 10);
 
-loadSources();
+// 初始不自动探测数据源，显示未检测占位，点击「重新检测可用性」再探测
+renderIdleSources();
 </script>
 </body>
 </html>
