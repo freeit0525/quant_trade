@@ -119,8 +119,9 @@
         <label>股票（可输入筛选 / 下拉选择）</label>
         <div id="stockPicker"></div>
       </div>
-      <div class="field" style="flex:0 0 auto; align-self:flex-end;">
-        <button id="fetchBtn" onclick="fetchStock()">拉取2年数据</button>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
+        <button id="fetchBtn" onclick="fetchStock(false)">读取2年数据</button>
+        <button class="secondary" onclick="fetchStock(true)">同步最新数据</button>
       </div>
     </div>
 
@@ -451,9 +452,10 @@ function calcMACD(closes, fast, slow, signal) {
   return { dif, dea, macd };
 }
 
-// ============ 股票数据拉取 ============
-// 数据统一通过本地服务 (server.py) 拉取：走数据库增量入库后返回，
-// 浏览器回测拉数据的同时自动入库。请先运行: python server.py
+// ============ 股票数据读取 ============
+// 默认从本地服务 (server.py) 的 /api/kline_db 纯读本地数据库（秒回、不联网）；
+// 「同步最新数据」按钮走 /api/kline 联网增量同步（查库→补缺口→入库）后再读库。
+// 请先运行: python server.py
 // 若以 file:// 方式直接打开页面，则 API 指向 http://127.0.0.1:8000（需服务已启动）
 const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
   ? 'http://127.0.0.1:8000' : '';
@@ -524,8 +526,8 @@ function updateRangeUI() {
   const btn = document.getElementById('fetchBtn');
   const hint = document.getElementById('stockInfo');
   if (mode === 'all') {
-    btn.textContent = '拉取全部数据';
-    hint.textContent = '输入6位代码或名称，拉取自上市以来的全部日K数据（数据源：东方财富）';
+    btn.textContent = '读取全部数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取自上市以来的全部日K数据（如需最新行情请点「同步最新数据」）';
     return;
   }
   if (mode === 'recent') {
@@ -535,12 +537,12 @@ function updateRangeUI() {
     const days = estimateTradingDays();
     const minDays = getMinHistoryDays();
     const extended = days > raw ? `（已扩展至最小 ${minDays} 条）` : '';
-    btn.textContent = `拉取 ${count} ${UNIT_LABEL[unit]} 数据`;
+    btn.textContent = `读取 ${count} ${UNIT_LABEL[unit]} 数据`;
     document.getElementById('recentHint').textContent = `≈ ${days} 个交易日${extended}`;
-    hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（数据源：东方财富）`;
+    hint.textContent = `输入6位代码或名称，从本地库读取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（如需最新行情请点「同步最新数据」）`;
   } else {
-    btn.textContent = '拉取时间段数据';
-    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K数据（数据源：东方财富）';
+    btn.textContent = '读取时间段数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取指定起止日期内的日K数据（如需最新行情请点「同步最新数据」）';
   }
 }
 
@@ -587,7 +589,8 @@ function buildRangeParams() {
   return { beg: dateToYYYYMMDD(begDate), end: dateToYYYYMMDD(new Date()), lmt: tradingDays };
 }
 
-async function fetchStock() {
+// 读取股票数据：默认只读本地库（秒回、不联网）；syncFirst=true 时先联网增量同步再读库
+async function fetchStock(syncFirst = false) {
   clearError();
   const infoEl = document.getElementById('stockInfo');
   const pickerEl = document.getElementById('stockPicker');
@@ -595,7 +598,7 @@ async function fetchStock() {
   const input = StockPicker.getInput(pickerEl);
   if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
 
-  infoEl.textContent = '正在拉取数据...';
+  infoEl.textContent = syncFirst ? '正在从数据源同步最新数据（联网，可能需要一些时间）...' : '正在读取本地数据库...';
   try {
     let code, name;
     if (picked) {
@@ -625,13 +628,25 @@ async function fetchStock() {
     // 避免短区间拉取时指标因起点不同与行情软件（全量历史计算）不一致。
     const warmupDays = 380;
     const warmupBeg = addDays(range.beg, -warmupDays);
-    // 通过本地服务拉取：先查库→增量拉取→入库，再返回完整数据
-    const url = `${API_BASE}/api/kline?code=${code}&beg=${warmupBeg}&end=${range.end}`;
+
+    // 手动同步：先走联网增量拉取（查库→补缺口→入库），失败仅告警，不阻断后续读库
+    if (syncFirst) {
+      try {
+        const syncRes = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${warmupBeg}&end=${range.end}`);
+        const syncData = await syncRes.json();
+        if (syncData.error) console.warn('同步失败:', syncData.error);
+      } catch (e) {
+        console.warn('同步失败:', e);
+      }
+    }
+
+    // 纯读本地数据库（MACD/MA/RSI/KDJ/量比等指标已由后端按全量历史预计算入库，无需联网）
+    const url = `${API_BASE}/api/kline_db?code=${code}&beg=${warmupBeg}&end=${range.end}`;
     const res = await fetch(url);
     const data = await res.json();
 
     if (!data.data || data.data.length === 0) {
-      showError(data.error || '未获取到K线数据，请检查代码是否正确');
+      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据，请点「同步最新数据」联网拉取一次');
       infoEl.textContent = '';
       return;
     }
@@ -677,13 +692,21 @@ async function fetchStock() {
     const lastClose = completeOhlc[completeOhlc.length - 1].close;
     const firstDate = completeOhlc[0].date;
     const lastDate = completeOhlc[completeOhlc.length - 1].date;
-    infoEl.innerHTML = `<strong style="color:#1a73e8">${name} (${code})</strong> | 共 ${completeOhlc.length} 个交易日 | 区间: ${firstDate} ~ ${lastDate} | 最新收盘: ${lastClose.toFixed(2)}`;
+    // 库中数据滞后提示：最新K线比请求结束日晚超过 5 个自然日才提示（周末/短假正常差异不提示）
+    const reqEndStr = String(range.end).replace(/-/g, '');
+    const dbLastStr = String(ohlc[ohlc.length - 1].date).replace(/-/g, '');
+    const gapDays = Math.round((new Date(reqEndStr.slice(0,4), +reqEndStr.slice(4,6) - 1, +reqEndStr.slice(6,8))
+      - new Date(dbLastStr.slice(0,4), +dbLastStr.slice(4,6) - 1, +dbLastStr.slice(6,8))) / 86400000);
+    const staleHint = gapDays > 5
+      ? `<br><span style="color:#ff9800">⚠ 本地库数据截至 ${ohlc[ohlc.length - 1].date}（滞后 ${gapDays} 天），若需最新行情请点「同步最新数据」</span>`
+      : '';
+    infoEl.innerHTML = `<strong style="color:#1a73e8">${name} (${code})</strong> | 共 ${completeOhlc.length} 个交易日 | 区间: ${firstDate} ~ ${lastDate} | 最新收盘: ${lastClose.toFixed(2)}${staleHint}`;
   } catch (e) {
     // Failed to fetch 常见原因：本地服务(server.py)未启动，或端口被占用
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
       ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
       : '';
-    showError('拉取失败: ' + e.message + hint);
+    showError('读取失败: ' + e.message + hint);
     infoEl.textContent = '';
   }
 }

@@ -12,6 +12,57 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# ---------- 数据源短时熔断 ----------
+# 东财系域名在当前网络常被拦截，连接会长时间挂起；连续失败达到阈值后，
+# 在一段时间内直接跳过该源，避免每次同步都空耗大量超时重试（也避免重复拉同一段数据）。
+_SOURCE_COOLDOWN_SECONDS = 300      # 熔断窗口：5 分钟
+_SOURCE_FAIL_THRESHOLD = 3          # 窗口内失败次数达到该值即熔断
+_SOURCE_FAILS: dict[str, list[float]] = {}  # 源名 -> 失败时刻（monotonic）列表
+
+
+def _source_skip(name: str) -> bool:
+    """源是否处于熔断期（窗口内失败次数达阈值）"""
+    import time
+
+    now = time.monotonic()
+    fails = [t for t in _SOURCE_FAILS.get(name, []) if now - t < _SOURCE_COOLDOWN_SECONDS]
+    _SOURCE_FAILS[name] = fails
+    return len(fails) >= _SOURCE_FAIL_THRESHOLD
+
+
+def _source_fail(name: str):
+    """记录一次源连接失败（akshare/东财直连统一记到 eastmoney 键下）"""
+    import time
+
+    _SOURCE_FAILS.setdefault(_source_key(name), []).append(time.monotonic())
+
+
+def _source_key(name: str) -> str:
+    """akshare 与东财直连同属东财域名，共用同一熔断键"""
+    return "eastmoney" if name in ("akshare", "eastmoney") else name
+
+
+# ---------- 空缺口短时记忆 ----------
+# 周末/节假日/停牌等区间源确认无新增数据后，短时间内不再重复联网尝试，
+# 避免每次同步都重新拉同一段没有数据的日期。
+_EMPTY_GAP_TTL = 6 * 3600  # 6 小时
+_EMPTY_GAPS: dict[tuple[str, str, str], float] = {}  # (symbol, start, end) -> monotonic
+
+
+def _gap_recently_skipped(symbol: str, start: str, end: str) -> bool:
+    import time
+
+    now = time.monotonic()
+    ts = _EMPTY_GAPS.get((symbol, start, end))
+    return ts is not None and now - ts < _EMPTY_GAP_TTL
+
+
+def _mark_gap_skipped(symbol: str, start: str, end: str):
+    import time
+
+    _EMPTY_GAPS[(symbol, start, end)] = time.monotonic()
+
+
 # 东财接口候选主机：被风控时不同主机间歇放行，逐主/机轮询提高成功率
 _EM_API_HOSTS = ("push2.eastmoney.com", "82.push2.eastmoney.com", "push2his.eastmoney.com")
 
@@ -396,15 +447,31 @@ class DataFetcher:
                         f"数据库已有 {symbol} 自 {min_date_str}，补拉历史缺口 {fetch_start_dt.strftime('%Y-%m-%d')} ~ {fetch_end}"
                     )
 
-        # 2. 依次拉取各缺口并入库
-        fetched_dfs = []
-        for fetch_start, fetch_end in gaps:
+        # 2. 按时间正序逐个拉取缺口并独立入库
+        #    正序处理保证后补缺口的滚动指标（MACD/MA等）能拿到先补缺口的前置历史；
+        #    单缺口独立入库，个别缺口失败不影响其他缺口，避免下次同步重复拉取同一段数据。
+        for fetch_start, fetch_end in sorted(gaps):
+            if _gap_recently_skipped(symbol, fetch_start, fetch_end):
+                logger.info(f"{symbol} 缺口 {fetch_start}~{fetch_end} 近期无新增数据，跳过")
+                continue
             df = self._fetch_from_source(symbol, fetch_start, fetch_end)
             if df.empty:
                 logger.warning(f"未获取到数据: {symbol} ({fetch_start} ~ {fetch_end})")
                 continue
             df = self._normalize_columns(df)
             df = df.sort_values("date").reset_index(drop=True)
+            # 无新增日期（如周末/节假日缺口，源只返回了库中已有的最后交易日）→ 跳过并短时记忆
+            exist_rows = get_kline(
+                symbol,
+                df["date"].min().strftime("%Y-%m-%d"),
+                df["date"].max().strftime("%Y-%m-%d"),
+            )
+            if not exist_rows.empty:
+                exist_dates = set(pd.to_datetime(exist_rows["date"]))
+                if all(d in exist_dates for d in df["date"]):
+                    _mark_gap_skipped(symbol, fetch_start, fetch_end)
+                    logger.info(f"{symbol} 缺口 {fetch_start}~{fetch_end} 无新增日期，跳过")
+                    continue
             # 计算量比（需库中 fetch_start 之前最近5个交易日的 volume 作为窗口前置）
             df = self._calc_volume_ratio(df, symbol, fetch_start)
             # 计算 MACD（拼接库中全量 close 重算，保证增量精确）
@@ -417,46 +484,48 @@ class DataFetcher:
             df = self._fill_turnover_from_baostock(df, symbol)
             # baostock 历史 turn 也缺失时，用库内附近真实换手率反推股本估算
             df = self._fill_turnover_by_estimate(df, symbol)
-            fetched_dfs.append(df)
-
-        if fetched_dfs:
-            combined = pd.concat(fetched_dfs, ignore_index=True)
-            save_kline(combined, symbol)
+            try:
+                save_kline(df, symbol)
+                logger.info(f"{symbol} 缺口 {fetch_start} ~ {fetch_end} 已入库 {len(df)} 条")
+            except Exception as e:
+                logger.error(f"{symbol} 缺口 {fetch_start} ~ {fetch_end} 入库失败（跳过，不阻塞其他缺口）: {e}")
 
         # 3. 从数据库返回完整范围
         return get_kline(symbol, start_str, end_str)
 
     def _fetch_from_source(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """按配置的数据源拉取数据；东财系(akshare/eastmoney)失败时逐级回退 baostock → 腾讯"""
+        """按配置的数据源拉取数据；失败时逐级回退
+
+        对连接连续失败的源（如被拦截的东财）做短时熔断，熔断期内直接跳过，
+        避免每次同步都在不可达源上反复超时、拖慢整体拉取。
+        """
+        if self.config.source == "tushare":
+            return self._fetch_via_tushare(symbol, start_date, end_date)
+        chain = {
+            "akshare": self._fetch_via_akshare,
+            "eastmoney": self._fetch_via_eastmoney,
+            "baostock": self._fetch_via_baostock,
+            "sina": self._fetch_via_sina,
+            "tencent": self._fetch_via_tencent,
+        }
         if self.config.source == "akshare":
-            df = self._fetch_via_akshare(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"akshare获取失败，回退东财直连: {symbol}")
-                df = self._fetch_via_eastmoney(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"东财直连获取失败，回退证券宝: {symbol}")
-                df = self._fetch_via_baostock(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
-                df = self._fetch_via_tencent(symbol, start_date, end_date)
+            order = ["akshare", "eastmoney", "baostock", "sina", "tencent"]
         elif self.config.source == "eastmoney":
-            df = self._fetch_via_eastmoney(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"东财直连获取失败，回退证券宝: {symbol}")
-                df = self._fetch_via_baostock(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
-                df = self._fetch_via_tencent(symbol, start_date, end_date)
+            order = ["eastmoney", "baostock", "sina", "tencent"]
         elif self.config.source == "baostock":
-            df = self._fetch_via_baostock(symbol, start_date, end_date)
-            if df.empty:
-                logger.warning(f"证券宝获取失败，回退腾讯数据源: {symbol}")
-                df = self._fetch_via_tencent(symbol, start_date, end_date)
-        elif self.config.source == "tushare":
-            df = self._fetch_via_tushare(symbol, start_date, end_date)
+            order = ["baostock", "sina", "tencent"]
         else:
             raise ValueError(f"不支持的数据源: {self.config.source}")
-        return df
+
+        for name in order:
+            if _source_skip(_source_key(name)):
+                logger.info(f"数据源 {name} 处于熔断期，跳过: {symbol}")
+                continue
+            df = chain[name](symbol, start_date, end_date)
+            if not df.empty:
+                return df
+            logger.warning(f"{name} 获取 {symbol} 无数据，尝试下一数据源")
+        return pd.DataFrame()
 
     def _calc_volume_ratio(self, df: pd.DataFrame, symbol: str, fetch_start: str) -> pd.DataFrame:
         """计算量比 = 当日成交量 / 过去5个交易日（不含当日）平均成交量
@@ -688,6 +757,9 @@ class DataFetcher:
 
     def _fetch_one(self, name: str, symbol: str, beg: str, end: str) -> pd.DataFrame:
         """按源名分发拉取（refresh_today 专用）"""
+        if _source_skip(_source_key(name)):
+            logger.info(f"数据源 {name} 处于熔断期，跳过刷新: {symbol}")
+            return pd.DataFrame()
         if name == "eastmoney":
             return self._fetch_via_eastmoney(symbol, beg, end)
         if name == "baostock":
@@ -718,33 +790,55 @@ class DataFetcher:
     def _fetch_fund_flow(self, symbol: str) -> pd.DataFrame:
         """获取个股资金流向，返回标准化DataFrame（date + 5个净流入列，单位元）
 
-        优先 akshare(东方财富)，失败时回退新浪 lscjfb 接口。
+        优先 akshare(东方财富)，失败时回退新浪 lscjfb 接口；
+        akshare 处于熔断期时直接使用新浪。
         """
+        if _source_skip(_source_key("akshare")):
+            logger.info(f"资金流 akshare 源处于熔断期，直接用新浪: {symbol}")
+            return self._fetch_fund_flow_via_sina(symbol)
         df = self._fetch_fund_flow_via_akshare(symbol)
         if df.empty:
             logger.warning(f"akshare资金流向不可用，回退新浪数据源: {symbol}")
             df = self._fetch_fund_flow_via_sina(symbol)
         return df
 
-    def _fetch_fund_flow_via_akshare(self, symbol: str) -> pd.DataFrame:
-        """通过 akshare 获取个股资金流向（近100个交易日），返回标准化DataFrame"""
+    def _fetch_fund_flow_via_akshare(self, symbol: str, timeout: float = 8.0) -> pd.DataFrame:
+        """通过 akshare 获取个股资金流向（近100个交易日），返回标准化DataFrame
+
+        akshare 内部走东财接口且无超时控制，本网络下东财常被拦截导致请求可能
+        长时间挂起，因此用守护线程 + 超时兜底，避免拖慢数据同步。
+        """
         try:
             import akshare as ak
         except ImportError:
             return pd.DataFrame()
 
         market = self._infer_market_code(symbol)
+        import threading
         import time
 
-        ff = None
-        for attempt in range(1, 3):  # akshare内部走东财接口，无请求头控制，失败自动重试1次
-            try:
-                ff = ak.stock_individual_fund_flow(stock=symbol, market=market)
-                break
-            except Exception as e:
-                logger.warning(f"akshare资金流向获取失败 {symbol}(第{attempt}次): {e}")
-                if attempt < 2:
-                    time.sleep(1)
+        result: dict = {}
+
+        def worker():
+            # akshare内部走东财接口，无请求头控制，失败自动重试1次
+            for attempt in range(1, 3):
+                try:
+                    result["df"] = ak.stock_individual_fund_flow(stock=symbol, market=market)
+                    return
+                except Exception as e:
+                    _source_fail("akshare")  # 东财域名不可达，计入熔断
+                    logger.warning(f"akshare资金流向获取失败 {symbol}(第{attempt}次): {e}")
+                    if attempt < 2:
+                        time.sleep(1)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            _source_fail("akshare")
+            logger.warning(f"akshare资金流向请求超时（>{timeout}s），跳过资金流: {symbol}")
+            return pd.DataFrame()
+        ff = result.get("df")
         if ff is None or ff.empty:
             return pd.DataFrame()
 
@@ -818,9 +912,26 @@ class DataFetcher:
             return pd.DataFrame()
 
     def _merge_fund_flow(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-        """将资金流向按日期 left-join 合并到K线DataFrame，缺失日期对应列为 NULL"""
+        """将资金流向按日期 left-join 合并到K线DataFrame，缺失日期对应列为 NULL
+
+        资金流已入库且覆盖本次 df 的日期时直接读库拼接，避免每次同步都联网重拉；
+        仅当库中缺失（或数据不完整）时才走网络（akshare→新浪 回退）。
+        """
         flow_cols = ["main_net_inflow", "super_large_net_inflow",
                      "large_net_inflow", "medium_net_inflow", "small_net_inflow"]
+        if not df.empty:
+            from database.db import get_kline
+
+            min_d = df["date"].min().strftime("%Y-%m-%d")
+            max_d = df["date"].max().strftime("%Y-%m-%d")
+            exist = get_kline(symbol, min_d, max_d)
+            if not exist.empty:
+                exist_sel = exist[exist["date"].isin(pd.to_datetime(df["date"]))]
+                if len(exist_sel) == len(df) and exist_sel[flow_cols].notna().all().all():
+                    logger.info(f"资金流已入库，直接读库拼接: {symbol} {min_d}~{max_d}")
+                    return df.merge(
+                        exist_sel[["date"] + flow_cols], on="date", how="left", suffixes=("_tmp", "")
+                    )
         ff = self._fetch_fund_flow(symbol)
         if ff.empty:
             for c in flow_cols:
@@ -961,6 +1072,7 @@ class DataFetcher:
                 last_exc = RuntimeError("akshare返回空数据")
             except Exception as e:
                 last_exc = e
+                _source_fail("akshare")  # 东财域名不可达，计入熔断
                 logger.warning(f"akshare获取 {symbol} 失败(第{attempt}次): {e}")
             if attempt < 2:
                 time.sleep(1)
@@ -1021,6 +1133,7 @@ class DataFetcher:
             df = df.sort_values("date").reset_index(drop=True)
             return df
         except Exception as e:
+            _source_fail("eastmoney")  # 东财域名不可达，计入熔断
             logger.error(f"东方财富直连接口获取数据失败: {e}")
             return pd.DataFrame()
 
@@ -1052,6 +1165,7 @@ class DataFetcher:
             while rs.next():
                 rows.append(rs.get_row_data())
         except Exception as e:
+            _source_fail("baostock")
             logger.error(f"证券宝获取数据失败: {e}")
             return pd.DataFrame()
         if not rows:
@@ -1126,6 +1240,64 @@ class DataFetcher:
             except Exception:
                 pass
 
+    def _fetch_via_sina(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """通过新浪行情接口获取前复权日线数据（备用数据源，实测可达且快）
+
+        新浪 getKLineData 无 beg/end 参数，一次最多返回最近 1023 根日K线（约4年），
+        适合补尾部缺口；更早的历史缺口会返回空（由 baostock 覆盖）。
+        复权方式为前复权，与 baostock/东财前复权数值一致（已实测校验）。
+        返回列: date/open/close/high/low/volume(股)/amount(近似)/amplitude/pct_change/change
+        turnover(换手率) 新浪接口不提供，置为 None（由 _fill_turnover_from_baostock 补全）。
+        """
+        import requests
+
+        market = self._infer_market_code(symbol)
+        sina_symbol = f"{market}{symbol}"
+        logger.info(f"通过新浪行情获取 {sina_symbol} 数据...")
+        try:
+            url = "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
+            params = {"symbol": sina_symbol, "scale": "240", "ma": "no", "datalen": "1023"}
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            items = resp.json()
+            if not items:
+                logger.warning(f"新浪行情无 {sina_symbol} 数据")
+                return pd.DataFrame()
+
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            rows = []
+            for it in items:
+                try:
+                    d = pd.to_datetime(it["day"])
+                    if d < start_dt or d > end_dt:
+                        continue
+                    rows.append({
+                        "date": d,
+                        "open": float(it["open"]),
+                        "close": float(it["close"]),
+                        "high": float(it["high"]),
+                        "low": float(it["low"]),
+                        "volume": float(it["volume"]),  # 新浪日线 volume 单位为股
+                    })
+                except (ValueError, TypeError, KeyError):
+                    continue
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df = df.sort_values("date").reset_index(drop=True)
+            # 前复权序列连续，派生字段直接由 close 计算（准确）
+            df["pct_change"] = df["close"].pct_change() * 100
+            df["change"] = df["close"].diff()
+            df["amplitude"] = (df["high"] - df["low"]) / df["close"].shift(1) * 100
+            df["amount"] = df["volume"] * df["close"]  # 近似成交额(元)，腾讯同款
+            df["turnover"] = None
+            return df
+        except Exception as e:
+            _source_fail("sina")
+            logger.error(f"新浪行情获取数据失败: {e}")
+            return pd.DataFrame()
+
     def _fetch_via_tencent(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """通过腾讯行情接口获取前复权日线数据（备用数据源）
 
@@ -1192,6 +1364,7 @@ class DataFetcher:
             df["turnover"] = None
             return df
         except Exception as e:
+            _source_fail("tencent")
             logger.error(f"腾讯行情获取数据失败: {e}")
             return pd.DataFrame()
 

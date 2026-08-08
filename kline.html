@@ -52,6 +52,8 @@
   }
   button:hover { background: #1557b0; }
   button:disabled { background: #b3cdf5; cursor: not-allowed; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
   .hint { font-size: 12px; color: #999; margin-top: 4px; }
   .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
   #chart { width: 100%; height: 980px; }
@@ -105,8 +107,9 @@
         <label>股票（可输入筛选 / 下拉选择）</label>
         <div id="stockPicker"></div>
       </div>
-      <div class="field" style="flex:0 0 auto; align-self:flex-end;">
-        <button id="fetchBtn" onclick="fetchStock()">拉取2年数据</button>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
+        <button id="fetchBtn" onclick="fetchStock(false)">读取2年数据</button>
+        <button class="secondary" onclick="fetchStock(true)">同步最新数据</button>
       </div>
     </div>
 
@@ -287,8 +290,8 @@ function updateRangeUI() {
   const btn = document.getElementById('fetchBtn');
   const hint = document.getElementById('stockHint');
   if (mode === 'all') {
-    btn.textContent = '拉取全部数据';
-    hint.textContent = '输入6位代码或名称，拉取自上市以来的全部日K数据（数据源：东方财富）';
+    btn.textContent = '读取全部数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取自上市以来的全部日K数据（如需最新行情请点「同步最新数据」）';
     return;
   }
   if (mode === 'recent') {
@@ -298,12 +301,12 @@ function updateRangeUI() {
     const days = estimateTradingDays();
     const minDays = getMinHistoryDays();
     const extended = days > raw ? `（已扩展至最小 ${minDays} 条）` : '';
-    btn.textContent = `拉取 ${count} ${UNIT_LABEL[unit]} 数据`;
+    btn.textContent = `读取 ${count} ${UNIT_LABEL[unit]} 数据`;
     document.getElementById('recentHint').textContent = `≈ ${days} 个交易日${extended}`;
-    hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（数据源：东方财富）`;
+    hint.textContent = `输入6位代码或名称，从本地库读取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日线数据（如需最新行情请点「同步最新数据」）`;
   } else {
-    btn.textContent = '拉取时间段数据';
-    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K数据（数据源：东方财富）';
+    btn.textContent = '读取时间段数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取指定起止日期内的日K数据（如需最新行情请点「同步最新数据」）';
   }
 }
 
@@ -339,15 +342,15 @@ function buildRangeParams() {
   return { beg: dateToYYYYMMDD(begDate), end: dateToYYYYMMDD(new Date()) };
 }
 
-// ============ 数据拉取（与策略回测一致：查库→增量拉取→入库→返回） ============
-async function fetchStock() {
+// ============ 数据读取（默认只读本地库；syncFirst=true 先联网增量同步再读库） ============
+async function fetchStock(syncFirst = false) {
   const hintEl = document.getElementById('stockHint');
   const pickerEl = document.getElementById('stockPicker');
   const picked = StockPicker.getValue(pickerEl);
   const input = StockPicker.getInput(pickerEl);
   if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
 
-  hintEl.textContent = '正在拉取数据...';
+  hintEl.textContent = syncFirst ? '正在从数据源同步最新数据（联网，可能需要一些时间）...' : '正在读取本地数据库...';
   clearError();
   try {
     let code, name;
@@ -373,11 +376,22 @@ async function fetchStock() {
 
     const range = buildRangeParams();
 
-    // 通过本地服务拉取：先查库→增量拉取→入库，再返回完整数据
-    const res = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
+    // 手动同步：先走联网增量拉取（查库→补缺口→入库），失败仅告警，不阻断后续读库
+    if (syncFirst) {
+      try {
+        const syncRes = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
+        const syncData = await syncRes.json();
+        if (syncData.error) console.warn('同步失败:', syncData.error);
+      } catch (e) {
+        console.warn('同步失败:', e);
+      }
+    }
+
+    // 纯读本地数据库（MACD/MA/RSI/KDJ/量比等指标已由后端预计算入库，无需联网）
+    const res = await fetch(`${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`);
     const data = await res.json();
     if (!data.data || data.data.length === 0) {
-      showError(data.error || '未获取到K线数据，请检查代码是否正确');
+      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据，请点「同步最新数据」联网拉取一次');
       hintEl.textContent = '';
       return;
     }
@@ -391,7 +405,7 @@ async function fetchStock() {
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
       ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）'
       : '';
-    showError('拉取失败: ' + e.message + hint);
+    showError('读取失败: ' + e.message + hint);
     hintEl.textContent = '';
   }
 }

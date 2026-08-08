@@ -75,6 +75,18 @@ def db_cursor(config: DatabaseConfig | None = None):
                 except Exception:
                     pass
                 conn = pool.getconn()
+            # 心跳探测：psycopg2 不主动感知服务端已断开的连接（conn.closed 仍为 False），
+            # 直接复用会导致 execute 时报 "connection already closed"。用 SELECT 1 先探活，失效则丢弃重取。
+            try:
+                probe = conn.cursor()
+                probe.execute("SELECT 1")
+                probe.close()
+            except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = pool.getconn()
             cur = conn.cursor()
             try:
                 yield cur
@@ -549,6 +561,16 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
     if df.empty:
         return 0
 
+    # 各列精度上限：numeric(12,4) 最大 10^8，numeric(20,4) 最大 10^16。
+    # 源返回的脏数据若超限会让整批入库失败（numeric field overflow），
+    # 导致整个缺口没存进去、下次同步重复拉取同一段数据，因此做钳制兜底。
+    _LIMIT_12_4 = 99999999.9999
+    _LIMIT_20_4 = 1e16 - 0.0001
+    _COLS_20_4 = {
+        "amount", "main_net_inflow", "super_large_net_inflow",
+        "large_net_inflow", "medium_net_inflow", "small_net_inflow",
+    }
+
     def _val(row, key, cast=float):
         v = row.get(key)
         if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -560,6 +582,15 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
         # PostgreSQL numeric 不支持 inf/nan（除零等产生的非有限值），统一转 NULL
         if isinstance(v, float) and not math.isfinite(v):
             return None
+        # 整数列（volume, bigint）不受 numeric 精度限制；浮点列超限时钳制
+        if isinstance(v, float):
+            lim = save_kline._LIMIT_20_4 if key in save_kline._COLS_20_4 else save_kline._LIMIT_12_4
+            if v > lim:
+                logger.warning("值超出列 %s 精度上限，已钳制: %s", key, v)
+                v = lim
+            elif v < -lim:
+                logger.warning("值超出列 %s 精度下限，已钳制: %s", key, v)
+                v = -lim
         return v
 
     rows = []

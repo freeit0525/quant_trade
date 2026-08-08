@@ -122,8 +122,9 @@
         <label>股票（可输入筛选 / 下拉选择）</label>
         <div id="stockPicker"></div>
       </div>
-      <div class="field" style="flex:0 0 auto; align-self:flex-end;">
-        <button id="fetchBtn" onclick="fetchStock()">拉取2年数据</button>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
+        <button id="fetchBtn" onclick="fetchStock(false)">读取2年数据</button>
+        <button class="secondary" onclick="fetchStock(true)">同步最新数据</button>
       </div>
     </div>
 
@@ -404,8 +405,8 @@ function updateRangeUI() {
   const btn = document.getElementById('fetchBtn');
   const hint = document.getElementById('stockInfo');
   if (mode === 'all') {
-    btn.textContent = '拉取全部数据';
-    hint.textContent = '输入6位代码或名称，拉取自上市以来的全部日K收盘价（数据源：东方财富）';
+    btn.textContent = '读取全部数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取自上市以来的全部日K收盘价（如需最新行情请点「同步最新数据」）';
     return;
   }
   if (mode === 'recent') {
@@ -415,12 +416,12 @@ function updateRangeUI() {
     const days = estimateTradingDays();
     const minDays = getMinHistoryDays();
     const extended = days > raw ? `（已扩展至最小 ${minDays} 条）` : '';
-    btn.textContent = `拉取 ${count} ${UNIT_LABEL[unit]} 数据`;
+    btn.textContent = `读取 ${count} ${UNIT_LABEL[unit]} 数据`;
     document.getElementById('recentHint').textContent = `≈ ${days} 个交易日${extended}`;
-    hint.textContent = `输入6位代码或名称，自动拉取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）收盘价（数据源：东方财富）`;
+    hint.textContent = `输入6位代码或名称，从本地库读取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）收盘价（如需最新行情请点「同步最新数据」）`;
   } else {
-    btn.textContent = '拉取时间段数据';
-    hint.textContent = '输入6位代码或名称，拉取指定起止日期内的日K收盘价（数据源：东方财富）';
+    btn.textContent = '读取时间段数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取指定起止日期内的日K收盘价（如需最新行情请点「同步最新数据」）';
   }
 }
 
@@ -510,7 +511,8 @@ function getTradingContext() {
 // 默认上下文（页面加载时设置）
 window.__tradingContext = getTradingContext();
 
-async function fetchStock() {
+// 读取股票数据：默认只读本地库（秒回、不联网）；syncFirst=true 时先联网增量同步再读库
+async function fetchStock(syncFirst = false) {
   clearError();
   const infoEl = document.getElementById('stockInfo');
   const pickerEl = document.getElementById('stockPicker');
@@ -518,7 +520,7 @@ async function fetchStock() {
   const input = StockPicker.getInput(pickerEl);
   if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
 
-  infoEl.textContent = '正在拉取数据...';
+  infoEl.textContent = syncFirst ? '正在从数据源同步最新数据（联网，可能需要一些时间）...' : '正在读取本地数据库...';
   try {
     let code, name;
     if (picked) {
@@ -543,13 +545,24 @@ async function fetchStock() {
 
     const range = buildRangeParams();
 
-    // 通过本地服务拉取：先查库→增量拉取→入库，再返回完整数据
-    const url = `${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`;
+    // 手动同步：先走联网增量拉取（查库→补缺口→入库），失败仅告警，不阻断后续读库
+    if (syncFirst) {
+      try {
+        const syncRes = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
+        const syncData = await syncRes.json();
+        if (syncData.error) console.warn('同步失败:', syncData.error);
+      } catch (e) {
+        console.warn('同步失败:', e);
+      }
+    }
+
+    // 纯读本地数据库（MACD/MA/RSI/KDJ/量比等指标已由后端预计算入库，无需联网）
+    const url = `${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`;
     const res = await fetch(url);
     const data = await res.json();
 
     if (!data.data || data.data.length === 0) {
-      showError(data.error || '未获取到K线数据，请检查代码是否正确');
+      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据，请点「同步最新数据」联网拉取一次');
       infoEl.textContent = '';
       return;
     }
