@@ -1050,6 +1050,168 @@ class DataFetcher:
             logger.info(f"库内估算回填 {symbol} 换手率 {filled} 行")
         return df
 
+    # 资金流 5 列（daily_kline 中与 K 线同表存储）
+    _FLOW_COLS = (
+        "main_net_inflow", "super_large_net_inflow",
+        "large_net_inflow", "medium_net_inflow", "small_net_inflow",
+    )
+
+    def probe_and_fix(self, symbol: str, fields: Optional[list[str]] = None) -> dict:
+        """日线数据字段探针：扫描指定股票各字段缺失情况并自动补全
+
+        参数 fields（默认全部）: turnover / amount / volume_ratio / fund_flow / stock_info
+        补全方式:
+          - turnover:     证券宝回填，兜底库内估算
+          - amount:       证券宝精确回填
+          - volume_ratio: 拼接库内历史成交量重算
+          - fund_flow:    akshare→新浪 拉取资金流 5 列
+          - stock_info:   最新收盘价 × 股本补全市值（无需联网）
+        返回逐字段报告: {缺失数, 补全数, 日期范围}
+        """
+        from database.db import get_kline
+
+        all_fields = ["turnover", "amount", "volume_ratio", "fund_flow", "stock_info"]
+        targets = [f for f in (fields or all_fields) if f in all_fields]
+        report: dict = {"symbol": symbol, "fields": {}}
+
+        if "stock_info" in targets:
+            report["fields"]["stock_info"] = self._probe_stock_info(symbol)
+
+        kline_fields = [f for f in targets if f != "stock_info"]
+        if not kline_fields:
+            return report
+        hist = get_kline(symbol, "1900-01-01", "2100-01-01")
+        if hist.empty:
+            report["error"] = f"库中无 {symbol} 日线数据"
+            return report
+        for field in kline_fields:
+            report["fields"][field] = self._probe_kline_field(symbol, hist, field)
+        return report
+
+    def _probe_kline_field(self, symbol: str, hist: pd.DataFrame, field: str) -> dict:
+        """检测日线字段缺失并补全，返回该字段报告（只更新缺失日期行，保留其他列）"""
+        from database.db import save_kline
+
+        if field == "fund_flow":
+            cols = list(self._FLOW_COLS)
+            missing = hist[hist[cols].isna().any(axis=1)]["date"].tolist()
+        else:
+            cols = [field]
+            missing = hist[hist[field].isna()]["date"].tolist()
+        if not missing:
+            return {"status": "ok", "missing": 0, "filled": 0, "range": None}
+
+        sub = hist[hist["date"].isin(missing)].copy()
+        if field == "turnover":
+            sub = self._fill_turnover_from_baostock(sub, symbol)
+            sub = self._fill_turnover_by_estimate(sub, symbol)
+        elif field == "amount":
+            sub = self._probe_fill_amount(sub, symbol)
+        elif field == "volume_ratio":
+            fetch_start = sub["date"].min().strftime("%Y%m%d")
+            sub = self._calc_volume_ratio(sub, symbol, fetch_start)
+        elif field == "fund_flow":
+            ff = self._fetch_fund_flow(symbol)
+            if not ff.empty:
+                # sub 中已有的 flow 列全为 NaN，先移除避免 merge 产生 _x/_y 后缀列
+                sub = sub.drop(columns=list(self._FLOW_COLS), errors="ignore")
+                sub = sub.merge(ff, on="date", how="left")
+        else:
+            return {"status": "skip", "missing": len(missing), "note": f"未知字段 {field}"}
+
+        filled = int(sub[cols].notna().all(axis=1).sum())
+        # 缺失日期行整行写回（upsert 带全列，不覆盖其他已有列）
+        save_kline(sub, symbol)
+        return {
+            "status": "filled" if filled else "partial",
+            "missing": len(missing),
+            "filled": filled,
+            "range": [str(sub["date"].min().date()), str(sub["date"].max().date())],
+        }
+
+    def _probe_fill_amount(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """用证券宝(baostock)按日期回填 amount（成交额，精确）"""
+        if not _baostock_ensure_login():
+            return df
+        import baostock as bs
+
+        bs_code = f"sh.{symbol}" if symbol.startswith(("6", "9")) else f"sz.{symbol}"
+        try:
+            rs = bs.query_history_k_data_plus(
+                bs_code, "date,amount",
+                start_date=df["date"].min().strftime("%Y-%m-%d"),
+                end_date=df["date"].max().strftime("%Y-%m-%d"),
+                frequency="d", adjustflag="3",
+            )
+            if rs.error_code != "0":
+                logger.warning(f"证券宝成交额查询失败 {bs_code}: {rs.error_msg}")
+                return df
+            rows = []
+            while rs.next():
+                rows.append(rs.get_row_data())
+            if not rows:
+                return df
+            bdf = pd.DataFrame(rows, columns=rs.fields)
+            bdf["date"] = pd.to_datetime(bdf["date"])
+            bdf["amount"] = pd.to_numeric(bdf["amount"], errors="coerce")
+            merged = df.merge(bdf[["date", "amount"]], on="date", how="left", suffixes=("_old", ""))
+            merged["amount"] = merged["amount"].fillna(merged["amount_old"])
+            merged = merged.drop(columns=["amount_old"])
+            filled = merged["amount"].notna().sum()
+            logger.info(f"证券宝回填 {symbol} 成交额 {filled}/{len(merged)} 行")
+            return merged
+        except Exception as e:
+            logger.warning(f"证券宝回填成交额失败 {symbol}: {e}")
+            return df
+
+    def _probe_stock_info(self, symbol: str) -> dict:
+        """扫描股票基本信息缺失，并用最新收盘价 × 股本补全市值（无需联网）"""
+        from database.db import db_cursor, get_kline
+
+        with db_cursor() as cur:
+            cur.execute(
+                """SELECT symbol, name, industry, list_date, market, total_share, float_share,
+                          total_market_cap, float_market_cap
+                   FROM market_data.stock_info WHERE symbol = %s""",
+                (symbol,),
+            )
+            cols = [d[0] for d in cur.description]
+            row = cur.fetchone()
+        if row is None:
+            return {"status": "no_info", "missing": 0, "filled": 0, "note": "库中无该股票信息"}
+        info = dict(zip(cols, row))
+        missing = [k for k in ("name", "industry", "list_date", "market",
+                               "total_share", "float_share",
+                               "total_market_cap", "float_market_cap")
+                   if info.get(k) in (None, "")]
+        updates: dict[str, float] = {}
+        close = None
+        if (info.get("total_share") and not info.get("total_market_cap")) or \
+           (info.get("float_share") and not info.get("float_market_cap")):
+            latest = get_kline(symbol, "1900-01-01", "2100-01-01")
+            if not latest.empty:
+                close = float(latest.sort_values("date").iloc[-1]["close"])
+        if close is not None:
+            if info.get("total_share") and not info.get("total_market_cap"):
+                updates["total_market_cap"] = close * float(info["total_share"])
+            if info.get("float_share") and not info.get("float_market_cap"):
+                updates["float_market_cap"] = close * float(info["float_share"])
+        filled = 0
+        if updates:
+            with db_cursor() as cur:
+                set_sql = ", ".join(f"{k} = %s" for k in updates)
+                cur.execute(
+                    f"UPDATE market_data.stock_info SET {set_sql} WHERE symbol = %s",
+                    [*updates.values(), symbol],
+                )
+            filled = len(updates)
+        return {
+            "status": "filled" if filled else ("ok" if not missing else "partial"),
+            "missing": len(missing),
+            "filled": filled,
+            "missing_fields": missing,
+        }
+
     def _fetch_via_akshare(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """通过akshare获取数据（内部走东财接口，无法注入请求头；失败自动重试1次）"""
         import time

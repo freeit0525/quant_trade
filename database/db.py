@@ -584,7 +584,7 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
             return None
         # 整数列（volume, bigint）不受 numeric 精度限制；浮点列超限时钳制
         if isinstance(v, float):
-            lim = save_kline._LIMIT_20_4 if key in save_kline._COLS_20_4 else save_kline._LIMIT_12_4
+            lim = _LIMIT_20_4 if key in _COLS_20_4 else _LIMIT_12_4
             if v > lim:
                 logger.warning("值超出列 %s 精度上限，已钳制: %s", key, v)
                 v = lim

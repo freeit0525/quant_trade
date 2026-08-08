@@ -134,6 +134,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_fetch(params)
             elif parsed.path == "/api/refresh_today":
                 self.api_refresh_today(params)
+            elif parsed.path == "/api/probe":
+                self.api_probe(params)
             elif parsed.path == "/api/strategies":
                 self.api_strategies(params)
             elif parsed.path == "/api/backtest/results":
@@ -830,6 +832,30 @@ class QuantHandler(SimpleHTTPRequestHandler):
              "after": after[0], "changed": changed, "message": message},
             200,
         )
+
+    def api_probe(self, params: dict):
+        """字段缺失探针：扫描并补全指定股票日线/股票信息缺失字段
+
+        参数:
+          code=股票代码（必填）
+          fields=逗号分隔字段（默认全部）
+            turnover / amount / volume_ratio / fund_flow / stock_info
+        返回: {symbol, fields: {字段: {status, missing, filled, range, ...}}}
+        """
+        code = (params.get("code") or "").strip()
+        if not code:
+            self._send_json({"error": "缺少参数 code"}, 400)
+            return
+        fields = [f.strip() for f in (params.get("fields") or "").split(",") if f.strip()] or None
+        from data.fetcher import DataFetcher
+
+        try:
+            report = DataFetcher().probe_and_fix(code, fields)
+        except Exception as e:
+            logger.exception("探针 %s 失败: %s", code, e)
+            self._send_json({"error": f"探针执行失败: {e}"}, 500)
+            return
+        self._send_json(report, 200)
 
     def api_refresh_today_all(self, source: str):
         """批量刷新库中所有股票的当天数据（/api/refresh_today 未传 code 时调用）"""
