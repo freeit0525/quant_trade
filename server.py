@@ -136,6 +136,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_refresh_today(params)
             elif parsed.path == "/api/strategies":
                 self.api_strategies(params)
+            elif parsed.path == "/api/backtest/results":
+                self.api_backtest_results(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -155,6 +157,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_strategy_update(body)
             elif parsed.path == "/api/strategy/delete":
                 self.api_strategy_delete(body)
+            elif parsed.path == "/api/backtest/result":
+                self.api_backtest_result_save(body)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -190,6 +194,84 @@ class QuantHandler(SimpleHTTPRequestHandler):
             }
             data.append(row)
         self._send_json({"data": data}, 200)
+
+    def api_backtest_results(self, params: dict):
+        """返回回测运行结果列表，可选 ?strategy_id=X 过滤"""
+        from database.db import get_backtest_results
+
+        strategy_id = None
+        if params.get("strategy_id"):
+            try:
+                strategy_id = int(params["strategy_id"])
+            except (TypeError, ValueError):
+                self._send_json({"error": "无效参数 strategy_id"}, 400)
+                return
+        limit = 50
+        if params.get("limit"):
+            try:
+                limit = min(int(params["limit"]), 200)
+            except (TypeError, ValueError):
+                pass
+        results = get_backtest_results(limit=limit, strategy_id=strategy_id)
+        data = []
+        for r in results:
+            row = {
+                "id": r["id"],
+                "strategy_id": r["strategy_id"],
+                "strategy_name": r["strategy_name"],
+                "symbol": r["symbol"],
+                "start_date": r["start_date"].strftime("%Y-%m-%d") if r.get("start_date") else "",
+                "end_date": r["end_date"].strftime("%Y-%m-%d") if r.get("end_date") else "",
+                "initial_capital": float(r["initial_capital"] or 0),
+                "final_capital": float(r["final_capital"] or 0),
+                "total_return": float(r["total_return"] or 0),
+                "annual_return": float(r["annual_return"] or 0),
+                "max_drawdown": float(r["max_drawdown"] or 0),
+                "sharpe_ratio": float(r["sharpe_ratio"] or 0),
+                "win_rate": float(r["win_rate"] or 0),
+                "total_trades": r["total_trades"] or 0,
+                "trading_days": r["trading_days"] or 0,
+                "total_commission": float(r["total_commission"] or 0),
+                "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M:%S") if r.get("created_at") else "",
+            }
+            data.append(row)
+        self._send_json({"data": data}, 200)
+
+    def api_backtest_result_save(self, body: dict):
+        """保存回测结果：{strategy_id?, strategy_name, symbol, start_date, end_date,
+           initial_capital, final_capital, total_return, annual_return, max_drawdown,
+           sharpe_ratio, win_rate?, total_trades?, trading_days?, total_commission?, params?}"""
+        from database.db import save_backtest_result
+
+        required = ["symbol", "start_date", "end_date"]
+        for key in required:
+            if not body.get(key):
+                self._send_json({"error": f"缺少参数 {key}"}, 400)
+                return
+        strategy_id = body.get("strategy_id")
+        try:
+            strategy_id = int(strategy_id) if strategy_id else None
+        except (TypeError, ValueError):
+            strategy_id = None
+        result_id = save_backtest_result(
+            strategy_name=(body.get("strategy_name") or "未命名策略").strip(),
+            symbol=str(body["symbol"]).strip(),
+            start_date=str(body["start_date"]),
+            end_date=str(body["end_date"]),
+            initial_capital=float(body.get("initial_capital") or 0),
+            final_capital=float(body.get("final_capital") or 0),
+            total_return=float(body.get("total_return") or 0),
+            annual_return=float(body.get("annual_return") or 0),
+            max_drawdown=float(body.get("max_drawdown") or 0),
+            sharpe_ratio=float(body.get("sharpe_ratio") or 0),
+            win_rate=float(body.get("win_rate") or 0),
+            total_trades=int(body.get("total_trades") or 0),
+            trading_days=int(body.get("trading_days") or 0),
+            total_commission=float(body.get("total_commission") or 0),
+            strategy_id=strategy_id,
+            params=body.get("params") or {},
+        )
+        self._send_json({"ok": True, "id": result_id, "message": "回测结果已保存"}, 200)
 
     def api_strategy_save(self, body: dict):
         """保存策略：{strategy_name, strategy_type, params, description?} → 返回 {id}"""

@@ -1293,13 +1293,17 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
     const sellGross = bandTrades.filter(t => t.type === 'sell').reduce((s, t) => s + t.amount, 0);
     const bandFee = bandTrades.reduce((s, t) => s + t.fee, 0);
     const lastTrade = bandTrades[bandTrades.length - 1];
+    // 卖出均价 = 卖出成交额(不含费) / 卖出总股数；未平仓波段无卖出，显示最后一笔卖出价或收盘价
+    const sellAvgPrice = cycle.sellShares > 0 ? sellGross / cycle.sellShares : sellPrice;
     cycles.push({
       startDate: cycle.startDate,
       endDate,
       holdDays: endIdx - cycle.startIdx,
       avgBuyPrice: cycle.buyShares > 0 ? cycle.buyGross / cycle.buyShares : 0,
       sellPrice,
+      sellAvgPrice,       // 波段加权卖出均价（含费后净收回均价由净盈亏体现）
       buyShares: cycle.buyShares,
+      buyAmount: cycle.buyAmount,   // 波段买入总投入（含手续费）
       pnl: pnlNet,
       returnPct: cycle.buyAmount > 0 ? pnlNet / cycle.buyAmount : 0,
       reason,
@@ -1314,9 +1318,9 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
     });
     cycle = null;
   };
-  // 卖出后把净收回金额累计到当前波段
-  const accSell = (net, price) => {
-    if (cycle) { cycle.sellAmount += net; cycle.lastSellPrice = price; }
+  // 卖出后把净收回金额与卖出股数累计到当前波段
+  const accSell = (net, price, soldShares) => {
+    if (cycle) { cycle.sellAmount += net; cycle.sellShares += soldShares; cycle.lastSellPrice = price; }
   };
 
   for (let i = 0; i < n; i++) {
@@ -1340,7 +1344,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
         cash += net;
         totalFee += fee.total;
         trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: `止损(${stopLoss}%)` });
-        accSell(net, sellPrice);
+        accSell(net, sellPrice, shares);
         shares = 0;
         avgCost = 0;
         adds = 0;
@@ -1358,7 +1362,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
           cash += net;
           totalFee += fee.total;
           trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares: actualSell, amount: gross, fee: fee.total, cashAfter: cash, reason: `止盈(${takeProfit}%)` });
-          accSell(net, sellPrice);
+          accSell(net, sellPrice, actualSell);
           shares -= actualSell;
           partialTaken = true;
           // avgCost 不变
@@ -1371,7 +1375,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
           cash += net;
           totalFee += fee.total;
           trades.push({ idx: i, date: k.date, type: 'sell', price: sellPrice, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: `止盈(${takeProfit}%)全平` });
-          accSell(net, sellPrice);
+          accSell(net, sellPrice, shares);
           shares = 0;
           avgCost = 0;
           adds = 0;
@@ -1405,7 +1409,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
             lastBuyIdx = i;
             if (adds === 1) {
               // 首个买入：开启新波段
-              cycle = { startIdx: i, startDate: k.date, buyAmount: 0, buyGross: 0, buyShares: 0, sellAmount: 0, lastSellPrice: null, firstTradeIdx: trades.length };
+              cycle = { startIdx: i, startDate: k.date, buyAmount: 0, buyGross: 0, buyShares: 0, sellAmount: 0, sellShares: 0, lastSellPrice: null, firstTradeIdx: trades.length };
             }
             cycle.buyAmount += totalCost;
             cycle.buyGross += gross;
@@ -1422,7 +1426,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
       cash += net;
       totalFee += fee.total;
       trades.push({ idx: i, date: k.date, type: 'sell', price: close, shares, amount: gross, fee: fee.total, cashAfter: cash, reason: '信号卖出' });
-      accSell(net, close);
+      accSell(net, close, shares);
       shares = 0;
       avgCost = 0;
       adds = 0;
@@ -2188,6 +2192,9 @@ function applyStrategyParams(params) {
 }
 
 // 从策略管理页跳转进入时（backtest.html?load=ID），加载策略参数到表单
+// 当前已加载策略的ID（从策略管理页 ?load=ID 进入时记录，用于保存回测结果关联）
+let currentStrategyId = null;
+
 async function loadStrategyFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const id = params.get('load');
@@ -2197,11 +2204,48 @@ async function loadStrategyFromUrl() {
     const data = await res.json();
     const item = (data.data || []).find(s => s.id === parseInt(id));
     if (!item) { showError(`未找到策略 id=${id}`); return; }
+    currentStrategyId = parseInt(id);
     applyStrategyParams(item.params);
     showError(`已加载策略「${item.strategy_name}」，参数已填入表单，请拉取数据后运行回测`);
     document.getElementById('errorMsg').style.color = '#34a853';
   } catch (e) {
     showError('加载策略失败: ' + e.message);
+  }
+}
+
+// 回测完成后保存结果到数据库（关联策略ID，供策略管理页展示）
+async function saveBacktestResult(ohlc, metrics, cfg) {
+  if (!cfg) return;
+  const startDate = ohlc[0] ? ohlc[0].date : '';
+  const endDate = ohlc[ohlc.length - 1] ? ohlc[ohlc.length - 1].date : '';
+  if (!startDate || !endDate) return;
+  const payload = {
+    strategy_id: currentStrategyId || undefined,
+    strategy_name: cfg.strategyName || '未命名策略',
+    symbol: cfg.stock.code || cfg.stock.name || '',
+    start_date: startDate,
+    end_date: endDate,
+    initial_capital: metrics.initCapital,
+    final_capital: metrics.finalEquity,
+    total_return: metrics.totalReturn,
+    annual_return: metrics.annualReturn,
+    max_drawdown: metrics.maxDrawdown,
+    sharpe_ratio: metrics.sharpeRatio || 0,
+    win_rate: metrics.winRate,
+    total_trades: (metrics.buyCount || 0) + (metrics.sellCount || 0),
+    trading_days: ohlc.length,
+    total_commission: metrics.totalFee || 0,
+    params: { strategy: cfg.strategy, sp: cfg.sp, macd: { fast: cfg.fast, slow: cfg.slow, signal: cfg.signal } },
+  };
+  try {
+    await fetch(`${API_BASE}/api/backtest/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    // 保存失败不影响回测展示
+    console.warn('保存回测结果失败:', e.message);
   }
 }
 
@@ -2268,8 +2312,10 @@ function runBacktest() {
     const signals = generateSignals(strategy, macdResult, ohlc, sp.flatFilter, sp.fastSell, sp.ma5Sell, sp.aboveWaterOnly, sp.buyStrength, sp.trendFilter, sp.volParams);
     const result = runBacktestEngine(ohlc, macdResult, signals, sp);
     const metrics = calcMetrics(ohlc, result);
+    const strategyName = (document.querySelector(`#strategySelect option[value="${strategy}"]`) || {}).textContent || strategy;
 
-    renderResults(ohlc, macdResult, result, metrics, { fast, slow, signal, strategy, sp, stock });
+    renderResults(ohlc, macdResult, result, metrics, { fast, slow, signal, strategy, strategyName, sp, stock });
+    saveBacktestResult(ohlc, metrics, { fast, slow, signal, strategy, strategyName, sp, stock });
   } catch (e) {
     showError('回测失败: ' + e.message);
   }
@@ -2375,7 +2421,7 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
         <summary>波段收益明细（共 ${cycles.length} 个波段，已平仓 ${cycles.filter(c => !c.open).length} 个）</summary>
         <table>
           <thead>
-            <tr><th>#</th><th>建仓日期</th><th>清仓日期</th><th>持仓天数</th><th>买入均价</th><th>卖出价</th><th>股数</th><th>成交额</th><th>手续费</th><th>剩余现金</th><th>净盈亏</th><th>收益率</th><th>结果</th><th>清仓原因</th></tr>
+            <tr><th>#</th><th>建仓日期</th><th>清仓日期</th><th>持仓天数</th><th>买入均价</th><th>卖出均价</th><th>股数</th><th>投入金额</th><th>成交额</th><th>手续费</th><th>剩余现金</th><th>净盈亏</th><th>收益率</th><th>结果</th><th>清仓原因</th></tr>
           </thead>
           <tbody>
             ${cycles.map((c, i) => {
@@ -2387,10 +2433,11 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
                 <td>${c.startDate}</td>
                 <td>${c.endDate}</td>
                 <td>${c.holdDays}</td>
-                <td>${fmt(c.avgBuyPrice)}</td>
-                <td>${fmt(c.sellPrice)}</td>
+                <td title="加权买入均价（不含手续费）">${fmt(c.avgBuyPrice)}</td>
+                <td title="波段内所有卖出的加权均价（含部分止盈，不含手续费）">${c.open ? '-' : fmt(c.sellAvgPrice)}</td>
                 <td>${c.buyShares}</td>
-                <td>${fmtMoney(c.turnover)}</td>
+                <td title="建仓+加仓的买入总投入（含手续费）">${fmtMoney(c.buyAmount)}</td>
+                <td title="买入成交额 + 卖出成交额（均不含手续费）">${fmtMoney(c.turnover)}</td>
                 <td style="color:#ff9800">${fmt(c.fee)}</td>
                 <td>${c.cashAfter != null ? fmtMoney(c.cashAfter) : '-'}</td>
                 <td class="${cls}">${c.pnl >= 0 ? '+' : '-'}${fmtMoney(Math.abs(c.pnl))}</td>

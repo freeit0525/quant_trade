@@ -123,6 +123,17 @@
   </div>
 </div>
 
+<!-- 运行结果模态框 -->
+<div class="modal-mask" id="resultsModal">
+  <div class="modal" style="width:900px;">
+    <h3 id="resultsTitle">运行结果</h3>
+    <div id="resultsBody" style="font-size:13px;color:#999;">加载中...</div>
+    <div class="actions">
+      <button class="secondary" onclick="document.getElementById('resultsModal').classList.remove('show')">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- 新建/编辑策略模态框 -->
 <div class="modal-mask" id="strategyModal">
   <div class="modal">
@@ -225,8 +236,9 @@ async function loadStrategies() {
           <td>${s.updated_at || s.created_at || ''}</td>
           <td style="text-align:center;white-space:nowrap;">
             <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="gotoBacktest(${s.id})">加载到回测</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="openResultsModal(${s.id}, '${s.strategy_name.replace(/'/g, "\\'")}')">运行结果</button>
             <button class="secondary" style="padding:3px 10px;font-size:12px;" onclick="openEditModal(${s.id})">编辑</button>
-            <button class="secondary" style="padding:3px 10px;font-size:12px;color:#e8453c;border-color:#e8453c;" onclick="deleteStrategy(${s.id}, '${s.strategy_name}')">删除</button>
+            <button class="secondary" style="padding:3px 10px;font-size:12px;color:#e8453c;border-color:#e8453c;" onclick="deleteStrategy(${s.id}, '${s.strategy_name.replace(/'/g, "\\'")}')">删除</button>
           </td>
         </tr>`;
     }).join('');
@@ -238,6 +250,53 @@ async function loadStrategies() {
 // 跳转到回测页并自动加载该策略
 function gotoBacktest(id) {
   window.location.href = `backtest.html?load=${id}`;
+}
+
+// 查看策略的历史运行结果
+async function openResultsModal(id, name) {
+  const modal = document.getElementById('resultsModal');
+  const title = document.getElementById('resultsTitle');
+  const body = document.getElementById('resultsBody');
+  title.textContent = `运行结果 - ${name}`;
+  body.innerHTML = '加载中...';
+  modal.classList.add('show');
+  try {
+    const res = await fetch(`${API_BASE}/api/backtest/results?strategy_id=${id}`);
+    const data = await res.json();
+    if (data.error) { body.innerHTML = `<span style="color:#e8453c;">${data.error}</span>`; return; }
+    const list = (data.data || []).filter(r => r.strategy_id === id);
+    if (list.length === 0) {
+      body.innerHTML = '<span style="color:#999;">该策略暂无运行结果。在回测页面加载此策略并运行回测后，结果会自动保存在这里。</span>';
+      return;
+    }
+    body.innerHTML = `
+      <table style="margin-top:8px;">
+        <thead>
+          <tr><th>#</th><th>股票</th><th>区间</th><th>总收益率</th><th>年化</th><th>最大回撤</th><th>胜率</th><th>交易笔数</th><th>总手续费</th><th>运行时间</th></tr>
+        </thead>
+        <tbody>
+          ${list.map((r, i) => {
+            const up = r.total_return >= 0;
+            return `
+            <tr>
+              <td>${i + 1}</td>
+              <td style="text-align:left;">${r.symbol}</td>
+              <td style="text-align:left;">${r.start_date} ~ ${r.end_date}</td>
+              <td style="color:${up ? '#34a853' : '#e8453c'};font-weight:600;">${up ? '+' : ''}${(r.total_return * 100).toFixed(2)}%</td>
+              <td style="color:${r.annual_return >= 0 ? '#34a853' : '#e8453c'};">${(r.annual_return * 100).toFixed(2)}%</td>
+              <td style="color:#e8453c;">-${(r.max_drawdown * 100).toFixed(2)}%</td>
+              <td>${(r.win_rate * 100).toFixed(1)}%</td>
+              <td>${r.total_trades}</td>
+              <td>¥${Number(r.total_commission).toFixed(2)}</td>
+              <td>${r.created_at}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div class="hint" style="margin-top:8px;">共 ${list.length} 次运行记录，按时间倒序。在回测页再次运行会追加新记录。</div>`;
+  } catch (e) {
+    body.innerHTML = `<span style="color:#e8453c;">加载失败: ${e.message}</span>`;
+  }
 }
 
 // ---- 新建/编辑 ----
