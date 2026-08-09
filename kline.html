@@ -218,6 +218,8 @@
   </div>
 </div>
 
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
 <script>
 // 数据统一通过本地服务 (server.py) 拉取，仅读取数据库，不联网。
@@ -373,6 +375,7 @@ async function fetchStock(syncFirst = false) {
       code = match.Code;
       name = match.Name;
     }
+    if (window.QueryHistory) QueryHistory.record(code, name);
 
     const range = buildRangeParams();
 
@@ -717,11 +720,7 @@ function fmtAmt(v) {
   if (v >= 1e4) return (v / 1e4).toFixed(2) + '万';
   return v.toFixed(0);
 }
-function showError(msg) {
-  const el = document.getElementById('errorMsg');
-  el.textContent = msg;
-  el.style.display = 'block';
-}
+function showError(msg) { showErrorModal(msg); }
 function clearError() {
   document.getElementById('errorMsg').style.display = 'none';
 }

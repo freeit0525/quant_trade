@@ -185,6 +185,46 @@
     <div class="legend" id="sourceLegend"></div>
   </div>
 
+  <!-- 数据探针（字段缺失检测） -->
+  <div class="panel">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <h2 style="margin:0; border:none; padding:0;">数据探针（字段缺失检测）</h2>
+      <button class="secondary" id="probeRunBtn" onclick="runProbe()">开始探测</button>
+    </div>
+    <div class="row">
+      <div class="field" style="flex:0 0 320px;">
+        <label>股票（可输入筛选 / 下拉选择）</label>
+        <div id="probeStockPicker"></div>
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <label>检测字段</label>
+        <div id="probeFields" style="display:flex; gap:14px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="checkbox" value="turnover" checked> 换手率
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="checkbox" value="amount" checked> 成交额
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="checkbox" value="volume_ratio" checked> 量比
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="checkbox" value="fund_flow" checked> 资金流
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="checkbox" value="stock_info" checked> 股票信息
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="hint">① 点击「开始探测」仅扫描本地库（不联网不写库），查看各字段缺失情况与补全方式；② 确认后点「一键补全」联网补全并写回数据库：换手率/成交额由证券宝回填，量比拼接历史成交量重算，资金流走 akshare→新浪，股票信息用最新收盘价 × 股本补全市值。</div>
+    <div style="display:flex; gap:10px; margin:10px 0;">
+      <button class="primary" id="probeRunBtn" onclick="runProbe()">开始探测</button>
+      <button class="secondary" id="probeFixBtn" onclick="runProbeFix()">一键补全缺失字段</button>
+    </div>
+    <div id="probeResult"></div>
+  </div>
+
   <!-- 拉取结果 -->
   <div class="panel" id="resultPanel" style="display:none;">
     <h2>拉取结果</h2>
@@ -209,6 +249,8 @@
   </div>
 </div>
 
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
 <script>
 // ============ 配置 ============
@@ -235,13 +277,9 @@ let lastFetch = null;    // 最近一次拉取请求信息（分页翻页复用�
 let currentPage = 1;     // 数据预览当前页
 
 // ============ 工具 ============
-function showError(msg) {
-  const el = document.getElementById('errorBox');
-  el.style.display = 'block';
-  el.textContent = msg;
-  document.getElementById('okBox').style.display = 'none';
-}
+function showError(msg) { showErrorModal(msg); }
 function showOk(msg) {
+  hideErrorModal();
   const el = document.getElementById('okBox');
   el.style.display = 'block';
   el.textContent = msg;
@@ -410,6 +448,136 @@ function selectSource(key, enabled) {
   }
 }
 
+// ============ 数据探针（字段缺失检测） ============
+const PROBE_FIELD_LABEL = {
+  turnover: '换手率',
+  amount: '成交额',
+  volume_ratio: '量比',
+  fund_flow: '资金流',
+  stock_info: '股票信息',
+};
+
+async function runProbe(fixMode = false) {
+  showError(''); document.getElementById('errorBox').style.display = 'none';
+  document.getElementById('okBox').style.display = 'none';
+
+  const runBtn = document.getElementById('probeRunBtn');
+  const fixBtn = document.getElementById('probeFixBtn');
+  const activeBtn = fixMode ? fixBtn : runBtn;
+  const inactiveBtn = fixMode ? runBtn : fixBtn;
+  const resultBox = document.getElementById('probeResult');
+  activeBtn.disabled = true;
+  inactiveBtn.disabled = true;
+  const oldText = activeBtn.textContent;
+  activeBtn.textContent = fixMode ? '补全中...' : '探测中...';
+  resultBox.innerHTML = fixMode
+    ? '<div class="hint">正在联网补全缺失字段，可能需要数十秒，请稍候...</div>'
+    : '<div class="hint">正在扫描本地库缺失字段（仅读取，不联网）...</div>';
+  try {
+    const { code, name } = await resolveProbeStock();
+    if (window.QueryHistory) QueryHistory.record(code, name || '');
+    const fields = [...document.querySelectorAll('#probeFields input:checked')]
+      .map(c => c.value).join(',');
+    const url = `${API_BASE}/api/probe?code=${code}`
+      + (fields ? `&fields=${fields}` : '') + (fixMode ? '&fix=1' : '');
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    renderProbeResult(data);
+    if (fixMode) {
+      showInfoModal(`补全完成：${data.symbol}，缺失字段已自动补全`);
+    } else {
+      const miss = Object.values(data.fields || {}).filter(f => (f.missing || 0) > 0).length;
+      showInfoModal(miss
+        ? `探测完成：${data.symbol} 有 ${miss} 个字段存在缺失，可点击「一键补全」进行补全`
+        : `探测完成：${data.symbol} 各字段均完整，无缺失`);
+    }
+  } catch (e) {
+    showError('探针失败: ' + e.message);
+  } finally {
+    activeBtn.disabled = false;
+    inactiveBtn.disabled = false;
+    activeBtn.textContent = oldText;
+  }
+}
+
+function runProbeFix() {
+  if (!confirm('将对存在缺失的字段执行联网补全并写回数据库，确认继续？')) return;
+  runProbe(true);
+}
+
+async function resolveProbeStock() {
+  const pickerEl = document.getElementById('probeStockPicker');
+  const picked = StockPicker.getValue(pickerEl);
+  const input = StockPicker.getInput(pickerEl);
+  if (picked) return { code: picked.code, name: picked.name };
+  if (/^\d{6}$/.test(input)) return { code: input };
+  if (input) {
+    // 名称 → 代码（从本地 stock_info 联想匹配）
+    const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
+    const data = await res.json();
+    const list = data.data || [];
+    if (!list.length) throw new Error(`未找到 "${input}" 对应的股票`);
+    const match = list.find(r => r.Name === input) || list[0];
+    return { code: match.Code, name: match.Name };
+  }
+  throw new Error('请选择股票或输入代码/名称');
+}
+
+function renderProbeResult(data) {
+  const box = document.getElementById('probeResult');
+  const entries = Object.entries(data.fields || {});
+  if (!entries.length) {
+    box.innerHTML = '<div class="hint">未检测到任何字段信息。</div>';
+    return;
+  }
+  const rows = entries.map(([key, f]) => {
+    const label = PROBE_FIELD_LABEL[key] || key;
+    const unfilled = f.unfilled || 0;
+    let statusHtml;
+    if (f.status === 'ok') {
+      statusHtml = '<span class="badge ok">完整</span>';
+    } else if (f.status === 'filled') {
+      statusHtml = '<span class="badge ok">已补全</span>';
+    } else if (f.status === 'partial') {
+      statusHtml = (unfilled > 0 && !(f.filled > 0))
+        ? '<span class="badge fail">无法补全</span>'
+        : '<span class="badge checking">部分</span>';
+    } else if (f.status === 'missing') {
+      statusHtml = '<span class="badge checking">待补全</span>';
+    } else if (f.status === 'no_info') {
+      statusHtml = '<span class="badge fail">无信息</span>';
+    } else {
+      statusHtml = '<span class="badge">跳过</span>';
+    }
+    // 缺失原因：优先后端 reason，无则按状态兜底
+    let reason = f.reason;
+    if (!reason) {
+      reason = f.status === 'ok' ? '无缺失' : (f.note || '未知');
+    }
+    if (f.range) reason += `（区间 ${f.range[0]} ~ ${f.range[1]}）`;
+    if (f.missing_fields && f.missing_fields.length) {
+      reason += `（缺失: ${f.missing_fields.join('、')}）`;
+    }
+    return `<tr>
+      <td style="text-align:left;">${label}</td>
+      <td>${statusHtml}</td>
+      <td>${f.missing ?? '-'}</td>
+      <td>${f.filled ?? '-'}</td>
+      <td style="color:#d93025;">${unfilled > 0 ? unfilled : '-'}</td>
+      <td style="text-align:left; color:#d93025;">${reason}</td>
+      <td style="text-align:left; color:#666;">${f.fix || '-'}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `<table>
+    <thead><tr>
+      <th style="text-align:left;">字段</th><th>状态</th><th>缺失条数</th><th>补全条数</th>
+      <th>无法补全</th><th style="text-align:left;">缺失原因</th><th style="text-align:left;">补全方式</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 // ============ 股票目录加载（可搜索下拉，数据来自本地库 stock_info） ============
 async function loadStockCatalog() {
   try {
@@ -419,6 +587,7 @@ async function loadStockCatalog() {
     const stocks = data.data || [];
     const picker = document.getElementById('stockPicker');
     StockPicker.init(picker, stocks);
+    StockPicker.init(document.getElementById('probeStockPicker'), stocks);
     if (stocks.length === 0) {
       document.getElementById('rangeHint').textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
     }
@@ -470,6 +639,7 @@ async function doFetch() {
   fetchBtn.textContent = '拉取中...';
   try {
     const { code, name } = await resolveStockInput();
+    if (window.QueryHistory) QueryHistory.record(code, name);
     const range = buildRange(code);
     const url = `${API_BASE}/api/fetch?source=${encodeURIComponent(selectedSource)}` +
       `&code=${code}&beg=${range.beg}&end=${range.end}`;
@@ -537,7 +707,8 @@ async function refreshToday() {
     const input = StockPicker.getInput(pickerEl);
     if (picked || (input && input.trim())) {
       // 有选择/输入 → 刷新该股
-      const { code } = await resolveStockInput();
+      const { code, name } = await resolveStockInput();
+      if (window.QueryHistory) QueryHistory.record(code, name);
       url += `&code=${code}`;
       single = true;
     }
@@ -701,6 +872,15 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && picker && picker.contains(e.target)) {
     e.preventDefault();
     doFetch();
+  }
+});
+
+// 探针面板股票输入框回车触发探测
+document.addEventListener('keydown', (e) => {
+  const picker = document.getElementById('probeStockPicker');
+  if (e.key === 'Enter' && picker && picker.contains(e.target)) {
+    e.preventDefault();
+    runProbe();
   }
 });
 

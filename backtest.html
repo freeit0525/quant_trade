@@ -102,6 +102,8 @@
   summary { cursor: pointer; font-size: 13px; color: #1a73e8; user-select: none; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
 </head>
 <body>
@@ -2088,7 +2090,7 @@ function resetStrategyParams() {
   document.getElementById('transferFee').value = 0.1;
 }
 
-function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.color = ''; el.style.display = 'block'; }
+function showError(msg) { showErrorModal(msg); }
 function clearError() { document.getElementById('errorMsg').style.display = 'none'; }
 
 // ============ 运行回测 ============
@@ -2229,8 +2231,7 @@ async function loadStrategyFromUrl() {
     if (!item) { showError(`未找到策略 id=${id}`); return; }
     currentStrategyId = parseInt(id);
     applyStrategyParams(item.params);
-    showError(`已加载策略「${item.strategy_name}」，参数已填入表单，请拉取数据后运行回测`);
-    document.getElementById('errorMsg').style.color = '#34a853';
+    showInfoModal(`已加载策略「${item.strategy_name}」，参数已填入表单，请拉取数据后运行回测`);
   } catch (e) {
     showError('加载策略失败: ' + e.message);
   }
@@ -2291,6 +2292,7 @@ function runBacktest() {
   const sp = getStrategyParams();
   const strategy = document.getElementById('strategySelect').value;
   const stock = window.__backtestStock || { code: '', name: '' };
+  if (window.QueryHistory && stock.code) QueryHistory.record(stock.code, stock.name);
 
   if (fast >= slow) { showError('快线周期必须小于慢线周期'); return; }
   // 量能策略按量能参数校验最少数据量（VR周期/突破周期/趋势均线取最大），否则按MACD慢线

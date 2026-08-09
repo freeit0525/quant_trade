@@ -605,7 +605,9 @@ class DataFetcher:
             ["date"]
             + [c for s in MACD_GROUPS for c in (f"macd_dif{s}", f"macd_dea{s}", f"macd_hist{s}")]
         )
-        return df.merge(all_close[cols], on="date", how="left", suffixes=("_old", ""))
+        return self._align_dates(df, all_close).merge(
+            all_close[cols], on="date", how="left", suffixes=("_old", "")
+        )
 
     def _calc_tech_indicators(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """计算 MA(5/10/20/30/60/120)、RSI(14)、KDJ(9,3,3)，增量时拼接库中全量 OHLC 重算
@@ -671,7 +673,9 @@ class DataFetcher:
             + ["rsi6", "rsi12", "rsi14", "rsi24", "kdj_k", "kdj_d", "kdj_j",
                "bias5", "bias10", "bias20"]
         )
-        return df.merge(all_ohlc[keep], on="date", how="left", suffixes=("_old", ""))
+        return self._align_dates(df, all_ohlc).merge(
+            all_ohlc[keep], on="date", how="left", suffixes=("_old", "")
+        )
 
     def refresh_today(self, symbol: str, source: str = "auto") -> pd.DataFrame:
         """强制刷新今天的数据并覆盖入库（绕过增量：库中已有当天数据也重拉）
@@ -926,10 +930,12 @@ class DataFetcher:
             max_d = df["date"].max().strftime("%Y-%m-%d")
             exist = get_kline(symbol, min_d, max_d)
             if not exist.empty:
-                exist_sel = exist[exist["date"].isin(pd.to_datetime(df["date"]))]
+                # 库内日期为 datetime64[s]，与 df 构造日期精度可能不同，先对齐再比对
+                df_dates = pd.to_datetime(df["date"]).astype(exist["date"].dtype)
+                exist_sel = exist[exist["date"].isin(df_dates)]
                 if len(exist_sel) == len(df) and exist_sel[flow_cols].notna().all().all():
                     logger.info(f"资金流已入库，直接读库拼接: {symbol} {min_d}~{max_d}")
-                    return df.merge(
+                    return self._align_dates(df, exist_sel).merge(
                         exist_sel[["date"] + flow_cols], on="date", how="left", suffixes=("_tmp", "")
                     )
         ff = self._fetch_fund_flow(symbol)
@@ -937,7 +943,7 @@ class DataFetcher:
             for c in flow_cols:
                 df[c] = None
             return df
-        df = df.merge(ff, on="date", how="left")
+        df = self._align_dates(df, ff).merge(ff, on="date", how="left")
         for c in flow_cols:
             if c not in df.columns:
                 df[c] = None
@@ -978,7 +984,7 @@ class DataFetcher:
             bdf["date"] = pd.to_datetime(bdf["date"])
             bdf["turn"] = pd.to_numeric(bdf["turn"], errors="coerce")
             bdf = bdf[["date", "turn"]].rename(columns={"turn": "turnover"})
-            merged = df.merge(bdf, on="date", how="left", suffixes=("", "_bs"))
+            merged = self._align_dates(df, bdf).merge(bdf, on="date", how="left", suffixes=("", "_bs"))
             merged["turnover"] = merged["turnover"].fillna(merged["turnover_bs"])
             merged = merged.drop(columns=["turnover_bs"])
             filled = merged["turnover"].notna().sum()
@@ -998,6 +1004,9 @@ class DataFetcher:
         """
         if df.empty or "turnover" not in df.columns:
             return df
+        # 调用方可能传入索引不连续的切片（如布尔筛选后的子集），
+        # 统一重置为连续位置索引，避免下方 iloc/at 用标签当作位置访问越界
+        df = df.reset_index(drop=True)
         na_idx = df.index[df["turnover"].isna()].tolist()
         if not na_idx:
             return df
@@ -1056,17 +1065,54 @@ class DataFetcher:
         "large_net_inflow", "medium_net_inflow", "small_net_inflow",
     )
 
-    def probe_and_fix(self, symbol: str, fields: Optional[list[str]] = None) -> dict:
-        """日线数据字段探针：扫描指定股票各字段缺失情况并自动补全
+    # 探针字段元数据：缺失原因 + 补全方式（供前端展示）
+    _PROBE_FIELD_META = {
+        "turnover": {
+            "reason": "数据源未提供换手率（如腾讯行情），或证券宝个别历史日期无数据",
+            "fix": "证券宝(baostock)按日期回填；兜底用库内附近90天真实换手率反推流通股本估算",
+        },
+        "amount": {
+            "reason": "数据源未提供成交额，或个别日期缺失",
+            "fix": "证券宝(baostock)按日期精确回填成交额",
+        },
+        "volume_ratio": {
+            "reason": "拉取时成交量不足5个交易日前置窗口，或当日停牌无成交量",
+            "fix": "拼接库内历史成交量重算：量比=当日成交量/过去5日平均成交量",
+        },
+        "fund_flow": {
+            "reason": "资金流接口不可用（akshare 被限流/新浪失败），或该股无资金流数据",
+            "fix": "akshare(东方财富)→新浪 lscjfb 接口拉取 5 列净流入",
+        },
+        "stock_info": {
+            "reason": "拉取K线时未保存股票基本信息，或部分字段为空",
+            "fix": "用最新收盘价×股本补全市值（无需联网）",
+        },
+    }
+
+    @staticmethod
+    def _align_dates(df: pd.DataFrame, ref: pd.DataFrame, key: str = "date") -> pd.DataFrame:
+        """将 df 的日期列精度对齐到 ref 的日期列
+
+        库内读出日期为 datetime64[s]，程序构造日期为 datetime64[us]/[ns]，
+        精度不同会导致 merge/isin 全部匹配不上，统一精度后合并才生效。
+        """
+        df[key] = df[key].astype(ref[key].dtype)
+        return df
+
+    def probe_and_fix(self, symbol: str, fields: Optional[list[str]] = None,
+                      fix: bool = True) -> dict:
+        """日线数据字段探针：扫描指定股票各字段缺失情况，fix=True 时自动补全
 
         参数 fields（默认全部）: turnover / amount / volume_ratio / fund_flow / stock_info
+        fix=False 时仅扫描本地库（不联网、不写库），返回缺失情况与补全方式说明；
+        fix=True 时对缺失字段执行联网补全并写回数据库。
         补全方式:
           - turnover:     证券宝回填，兜底库内估算
           - amount:       证券宝精确回填
           - volume_ratio: 拼接库内历史成交量重算
           - fund_flow:    akshare→新浪 拉取资金流 5 列
           - stock_info:   最新收盘价 × 股本补全市值（无需联网）
-        返回逐字段报告: {缺失数, 补全数, 日期范围}
+        返回逐字段报告: {缺失数, 补全数, 日期范围, 缺失原因, 补全方式}
         """
         from database.db import get_kline
 
@@ -1075,7 +1121,7 @@ class DataFetcher:
         report: dict = {"symbol": symbol, "fields": {}}
 
         if "stock_info" in targets:
-            report["fields"]["stock_info"] = self._probe_stock_info(symbol)
+            report["fields"]["stock_info"] = self._probe_stock_info(symbol, fix=fix)
 
         kline_fields = [f for f in targets if f != "stock_info"]
         if not kline_fields:
@@ -1085,11 +1131,16 @@ class DataFetcher:
             report["error"] = f"库中无 {symbol} 日线数据"
             return report
         for field in kline_fields:
-            report["fields"][field] = self._probe_kline_field(symbol, hist, field)
+            report["fields"][field] = self._probe_kline_field(symbol, hist, field, fix=fix)
         return report
 
-    def _probe_kline_field(self, symbol: str, hist: pd.DataFrame, field: str) -> dict:
-        """检测日线字段缺失并补全，返回该字段报告（只更新缺失日期行，保留其他列）"""
+    def _probe_kline_field(self, symbol: str, hist: pd.DataFrame, field: str,
+                           fix: bool = True) -> dict:
+        """检测日线字段缺失并补全，返回该字段报告
+
+        fix=False 时仅扫描本地库（不联网、不写库），status="missing" 表示有缺失待补全。
+        fix=True 时只更新缺失日期行，保留其他列。
+        """
         from database.db import save_kline
 
         if field == "fund_flow":
@@ -1098,10 +1149,24 @@ class DataFetcher:
         else:
             cols = [field]
             missing = hist[hist[field].isna()]["date"].tolist()
+        meta = self._PROBE_FIELD_META.get(field, {})
         if not missing:
-            return {"status": "ok", "missing": 0, "filled": 0, "range": None}
+            return {"status": "ok", "missing": 0, "filled": 0, "range": None,
+                    "reason": None, "fix": meta.get("fix")}
+        if not fix:
+            # 仅扫描：只读本地库，给出缺失区间与补全方式说明
+            sub = hist[hist["date"].isin(missing)]
+            return {
+                "status": "missing",
+                "missing": len(missing),
+                "filled": 0,
+                "range": [str(sub["date"].min().date()), str(sub["date"].max().date())],
+                "reason": meta.get("reason"),
+                "fix": meta.get("fix"),
+            }
 
         sub = hist[hist["date"].isin(missing)].copy()
+        ff = pd.DataFrame()  # fund_flow 数据源结果，用于区分"接口失败"与"市场无数据"
         if field == "turnover":
             sub = self._fill_turnover_from_baostock(sub, symbol)
             sub = self._fill_turnover_by_estimate(sub, symbol)
@@ -1115,18 +1180,36 @@ class DataFetcher:
             if not ff.empty:
                 # sub 中已有的 flow 列全为 NaN，先移除避免 merge 产生 _x/_y 后缀列
                 sub = sub.drop(columns=list(self._FLOW_COLS), errors="ignore")
-                sub = sub.merge(ff, on="date", how="left")
+                sub = self._align_dates(sub, ff).merge(ff, on="date", how="left")
         else:
             return {"status": "skip", "missing": len(missing), "note": f"未知字段 {field}"}
 
         filled = int(sub[cols].notna().all(axis=1).sum())
         # 缺失日期行整行写回（upsert 带全列，不覆盖其他已有列）
         save_kline(sub, symbol)
+        meta = self._PROBE_FIELD_META.get(field, {})
+        unfilled = len(missing) - filled
+        reason = meta.get("reason")
+        if unfilled:
+            if field == "fund_flow":
+                if not ff.empty:
+                    reason = (f"{reason}；缺失日期均不在资金流数据源覆盖范围"
+                              f"（数据源最早 {ff['date'].min().date()}），市场无该段数据，无法补全")
+                else:
+                    reason = (f"{reason}；接口暂不可用（akshare 被限流/新浪失败），"
+                              f"本次未拉取到数据，可稍后重试补全")
+            elif field == "volume_ratio":
+                reason = f"{reason}；缺前置成交量（停牌或数据不足），无法重算，无法补全"
+            else:
+                reason = f"{reason}；证券宝(baostock)未提供该段数据，市场无该段数据或接口暂不可用，无法补全"
         return {
             "status": "filled" if filled else "partial",
             "missing": len(missing),
             "filled": filled,
+            "unfilled": unfilled,
             "range": [str(sub["date"].min().date()), str(sub["date"].max().date())],
+            "reason": reason,
+            "fix": meta.get("fix"),
         }
 
     def _probe_fill_amount(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -1154,7 +1237,9 @@ class DataFetcher:
             bdf = pd.DataFrame(rows, columns=rs.fields)
             bdf["date"] = pd.to_datetime(bdf["date"])
             bdf["amount"] = pd.to_numeric(bdf["amount"], errors="coerce")
-            merged = df.merge(bdf[["date", "amount"]], on="date", how="left", suffixes=("_old", ""))
+            merged = self._align_dates(df, bdf).merge(
+                bdf[["date", "amount"]], on="date", how="left", suffixes=("_old", "")
+            )
             merged["amount"] = merged["amount"].fillna(merged["amount_old"])
             merged = merged.drop(columns=["amount_old"])
             filled = merged["amount"].notna().sum()
@@ -1164,8 +1249,8 @@ class DataFetcher:
             logger.warning(f"证券宝回填成交额失败 {symbol}: {e}")
             return df
 
-    def _probe_stock_info(self, symbol: str) -> dict:
-        """扫描股票基本信息缺失，并用最新收盘价 × 股本补全市值（无需联网）"""
+    def _probe_stock_info(self, symbol: str, fix: bool = True) -> dict:
+        """扫描股票基本信息缺失，fix=True 时用最新收盘价 × 股本补全市值（无需联网）"""
         from database.db import db_cursor, get_kline
 
         with db_cursor() as cur:
@@ -1178,12 +1263,26 @@ class DataFetcher:
             cols = [d[0] for d in cur.description]
             row = cur.fetchone()
         if row is None:
-            return {"status": "no_info", "missing": 0, "filled": 0, "note": "库中无该股票信息"}
+            meta = self._PROBE_FIELD_META.get("stock_info", {})
+            return {"status": "no_info", "missing": 0, "filled": 0,
+                    "note": "库中无该股票信息", "reason": "股票信息表中无该股票记录",
+                    "fix": meta.get("fix")}
         info = dict(zip(cols, row))
         missing = [k for k in ("name", "industry", "list_date", "market",
                                "total_share", "float_share",
                                "total_market_cap", "float_market_cap")
                    if info.get(k) in (None, "")]
+        meta = self._PROBE_FIELD_META.get("stock_info", {})
+        if not fix:
+            # 仅扫描：只读本地库
+            return {
+                "status": "missing" if missing else "ok",
+                "missing": len(missing),
+                "filled": 0,
+                "missing_fields": missing,
+                "reason": meta.get("reason") if missing else None,
+                "fix": meta.get("fix"),
+            }
         updates: dict[str, float] = {}
         close = None
         if (info.get("total_share") and not info.get("total_market_cap")) or \
@@ -1205,11 +1304,16 @@ class DataFetcher:
                     [*updates.values(), symbol],
                 )
             filled = len(updates)
+        reason = meta.get("reason") if (missing or filled) else None
+        if filled < len(missing):
+            reason = f"{reason}；仍有 {len(missing) - filled} 项未能补全"
         return {
             "status": "filled" if filled else ("ok" if not missing else "partial"),
             "missing": len(missing),
             "filled": filled,
             "missing_fields": missing,
+            "reason": reason,
+            "fix": meta.get("fix"),
         }
 
     def _fetch_via_akshare(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:

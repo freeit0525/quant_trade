@@ -59,3 +59,25 @@
   font-size: 12px;
   color: #999;
 }
+.picker-group-label {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  color: #999;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+  white-space: nowrap;
+}
+.picker-item.picker-recent {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.picker-item.picker-recent .picker-count {
+  flex: none;
+  font-size: 11px;
+  color: #1a73e8;
+  background: #eef3fb;
+  border-radius: 8px;
+  padding: 1px 7px;
+}

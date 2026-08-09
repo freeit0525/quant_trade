@@ -834,23 +834,25 @@ class QuantHandler(SimpleHTTPRequestHandler):
         )
 
     def api_probe(self, params: dict):
-        """字段缺失探针：扫描并补全指定股票日线/股票信息缺失字段
+        """字段缺失探针：扫描指定股票日线/股票信息缺失字段，可补全
 
         参数:
           code=股票代码（必填）
           fields=逗号分隔字段（默认全部）
             turnover / amount / volume_ratio / fund_flow / stock_info
-        返回: {symbol, fields: {字段: {status, missing, filled, range, ...}}}
+          fix=0 仅扫描本地库（不联网不写库）；fix=1 或省略则扫描并自动补全
+        返回: {symbol, fields: {字段: {status, missing, filled, range, reason, fix}}}
         """
         code = (params.get("code") or "").strip()
         if not code:
             self._send_json({"error": "缺少参数 code"}, 400)
             return
         fields = [f.strip() for f in (params.get("fields") or "").split(",") if f.strip()] or None
+        fix = params.get("fix") in ("1", "true", "True", "yes", "on")
         from data.fetcher import DataFetcher
 
         try:
-            report = DataFetcher().probe_and_fix(code, fields)
+            report = DataFetcher().probe_and_fix(code, fields, fix=fix)
         except Exception as e:
             logger.exception("探针 %s 失败: %s", code, e)
             self._send_json({"error": f"探针执行失败: {e}"}, 500)

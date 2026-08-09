@@ -23,16 +23,33 @@
 
     function render(filter) {
       const f = (filter || '').trim().toLowerCase();
+      let html = '';
+      // 无输入时，顶部展示最近查询（按查询次数排序，次数多在前）
+      if (!f && window.QueryHistory) {
+        const recents = QueryHistory.list(5);
+        if (recents.length) {
+          html += '<div class="picker-group-label">最近查询</div>';
+          html += recents.map(r => {
+            const nm = (r.name || '').replace(/"/g, '&quot;');
+            return `<div class="picker-item picker-recent" data-code="${r.code}" data-name="${nm}">
+              <span>${r.name || r.code} (${r.code})</span>
+              <span class="picker-count">${r.count}次</span>
+            </div>`;
+          }).join('');
+          html += '<div class="picker-group-label">全部股票</div>';
+        }
+      }
       let matched = f
         ? items.filter(it => it.code.includes(f) || it.name.toLowerCase().includes(f))
         : items;
       matched = matched.slice(0, 500);
-      if (matched.length === 0) {
+      if (matched.length === 0 && !html) {
         list.innerHTML = '<div class="picker-empty">无匹配项</div>';
       } else {
-        list.innerHTML = matched.map(it =>
+        html += matched.map(it =>
           `<div class="picker-item" data-code="${it.code}" data-name="${it.name.replace(/"/g, '&quot;')}">${it.name} (${it.code})</div>`
         ).join('');
+        list.innerHTML = html;
       }
     }
 
