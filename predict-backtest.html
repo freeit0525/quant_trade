@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>买卖点回测</title>
+<link rel="stylesheet" href="stock-picker.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .field { flex: 1; min-width: 120px; }
+  .field.small { flex: 0 0 120px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+  input, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #1a73e8; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+  .up { color: #e8453c; }
+  .down { color: #34a853; }
+  .mid { color: #ff9800; }
+
+  /* 股票多选 */
+  .stock-checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+  .stock-checks label {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 13px; color: #444; cursor: pointer; white-space: nowrap;
+  }
+  .stock-checks input { width: auto; }
+
+  /* 权重 */
+  .weight-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px 16px; }
+  .weight-item { display: flex; align-items: center; gap: 8px; }
+  .weight-item .name { flex: 0 0 58px; font-size: 13px; color: #555; white-space: nowrap; }
+  .weight-item input[type=range] { flex: 1; min-width: 50px; padding: 0; }
+  .weight-item .val { flex: 0 0 28px; font-size: 12px; color: #1a73e8; font-family: Consolas, monospace; text-align: right; }
+
+  /* 汇总卡片 */
+  .stat-chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+  .chip { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 8px 14px; font-size: 13px; }
+  .chip .k { color: #888; display: block; font-size: 11px; white-space: nowrap; }
+  .chip .v { font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .chip .v.up { color: #e8453c; }
+  .chip .v.down { color: #34a853; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #eee; font-family: Consolas, monospace; }
+  th { background: #f8f9fa; color: #666; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .tag { display: inline-block; font-size: 11px; border-radius: 3px; padding: 1px 8px; }
+  .tag.buy { background: #fdecea; color: #e8453c; }
+  .tag.sell { background: #e8f5e9; color: #34a853; }
+
+  .chart-wrap { margin-top: 12px; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #eee; }
+  .chart-wrap h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .chart-canvas-wrap { position: relative; height: 300px; }
+
+  .note-box { background: #fdf8ec; border: 1px solid #f3e6c5; border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #7a5b16; margin-top: 10px; line-height: 1.7; }
+  .note-box strong { color: #7a5b16; }
+  .factor-note { font-size: 12px; color: #888; margin-top: 6px; }
+
+  .pager { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: #666; }
+  .pager button { padding: 4px 12px; font-size: 12px; }
+  .pager .pg { flex: 0 0 auto; white-space: nowrap; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
+<script src="predict-engine.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <h1>买卖点回测</h1>
+    <a class="back" href="index.html">← 返回入口</a>
+  </div>
+  <div class="subtitle">用库中现有股票数据批量回测买卖点预测模型：沿用预测页同样的12因子评分与信号判定口径，统计信号命中率、收益与因子有效性，找出模型不足</div>
+
+  <!-- 股票与数据范围 -->
+  <div class="panel">
+    <h2>股票与数据范围</h2>
+    <div class="row" style="align-items:center;">
+      <div class="field" style="flex:0 0 auto; min-width:0;">
+        <label>回测股票（库中已有K线）</label>
+        <div id="stockChecks" class="stock-checks"><span class="hint">正在加载库内股票...</span></div>
+      </div>
+      <div style="display:flex; gap:8px; align-self:flex-end;">
+        <button class="secondary" onclick="setAllStocks(true)">全选</button>
+        <button class="secondary" onclick="setAllStocks(false)">清空</button>
+      </div>
+    </div>
+
+    <!-- 数据范围模式切换 -->
+    <div class="row" style="align-items:center; margin-top:4px;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="recent" onchange="onRangeModeChange()"> 最近
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="all" checked onchange="onRangeModeChange()"> 自上市以后
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最近模式 -->
+    <div id="recentModeRow" class="row" style="display:none;">
+      <div class="field small">
+        <label>数量</label>
+        <input type="number" id="rangeCount" value="2" min="1" oninput="updateRangeUI()">
+      </div>
+      <div class="field small">
+        <label>单位</label>
+        <select id="rangeUnit" onchange="updateRangeUI()">
+          <option value="year" selected>年</option>
+          <option value="month">月</option>
+          <option value="quarter">季度</option>
+        </select>
+      </div>
+      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px; white-space:nowrap;">≈ 500 个交易日</div>
+    </div>
+
+    <!-- 时间段模式 -->
+    <div id="periodModeRow" class="row" style="display:none;">
+      <div class="field small">
+        <label>起始日期</label>
+        <input type="date" id="begDate">
+      </div>
+      <div class="field small">
+        <label>结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+    </div>
+
+    <div id="rangeHint" class="hint">默认回测自上市以来的全部历史数据（约5万+根K线，计算约需数秒~十几秒）</div>
+  </div>
+
+  <!-- 回测参数 -->
+  <div class="panel">
+    <h2>回测参数</h2>
+    <div class="row">
+      <div class="field small">
+        <label>买入阈值 BUY_TH</label>
+        <input type="number" id="buyTh" value="25" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号">
+      </div>
+      <div class="field small">
+        <label>卖出阈值 SELL_TH</label>
+        <input type="number" id="sellTh" value="-25" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号">
+      </div>
+      <div class="field small">
+        <label>评价周期 N 日</label>
+        <select id="evalDays">
+          <option value="1">1日</option>
+          <option value="3">3日</option>
+          <option value="5" selected>5日</option>
+          <option value="10">10日</option>
+          <option value="20">20日</option>
+        </select>
+      </div>
+    </div>
+    <div class="hint">命中口径与预测页一致：买入信号 N 日后上涨=命中，卖出信号 N 日后下跌=命中；其余为未命中（N 日窗口不足时不统计）</div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>因子权重（与预测页同引擎）</label>
+        <div class="weight-grid" id="weightGrid"></div>
+      </div>
+      <div style="display:flex; gap:8px; align-self:flex-end;">
+        <button class="secondary" onclick="resetWeights()">恢复默认</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <button id="runBtn" onclick="runBacktest()">开始回测</button>
+      <span id="runStatus" class="hint" style="align-self:center;"></span>
+    </div>
+  </div>
+
+  <!-- 回测结果 -->
+  <div id="resultArea"></div>
+</div>
+
+<script>
+// ============ 基础工具 ============
+const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
+  ? 'http://127.0.0.1:8000' : '';
+const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
+const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
+
+function showError(msg) { showErrorModal(msg); }
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ============ 股票加载 ============
+let STOCKS = [];
+async function loadStockList() {
+  const wrap = document.getElementById('stockChecks');
+  try {
+    const res = await fetch(`${API_BASE}/api/stock_list`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    STOCKS = data.data || [];
+    if (!STOCKS.length) {
+      wrap.innerHTML = '<span class="hint">库中暂无K线数据，请先在「数据拉取」页导入</span>';
+      return;
+    }
+    wrap.innerHTML = STOCKS.map(s => `
+      <label><input type="checkbox" class="stock-cb" value="${s.Code}" checked> ${s.Code} ${s.Name || ''}</label>
+    `).join('');
+  } catch (e) {
+    wrap.innerHTML = `<span class="error" style="display:block;">加载股票列表失败: ${e.message}</span>`;
+  }
+}
+function setAllStocks(on) {
+  document.querySelectorAll('.stock-cb').forEach(cb => cb.checked = on);
+}
+function getSelectedStocks() {
+  return [...document.querySelectorAll('.stock-cb:checked')].map(cb => cb.value);
+}
+
+// ============ 数据范围 ============
+function getRangeMode() {
+  const el = document.querySelector('input[name="rangeMode"]:checked');
+  return el ? el.value : 'all';
+}
+function onRangeModeChange() {
+  const mode = getRangeMode();
+  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
+  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
+  updateRangeUI();
+}
+function estimateTradingDays() {
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  return Math.max(count * (UNIT_TRADING_DAYS[unit] || 1), 120);
+}
+function updateRangeUI() {
+  const mode = getRangeMode();
+  const hint = document.getElementById('rangeHint');
+  if (mode === 'all') { hint.textContent = '回测自上市以来的全部历史数据'; }
+  else if (mode === 'recent') {
+    const days = estimateTradingDays();
+    document.getElementById('recentHint').textContent = `≈ ${days} 个交易日`;
+    hint.textContent = `回测最近 ${document.getElementById('rangeCount').value} ${UNIT_LABEL[document.getElementById('rangeUnit').value]}（≈${days} 个交易日）`;
+  } else {
+    hint.textContent = '回测指定时间段内的数据';
+  }
+}
+function dateToYYYYMMDD(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+function buildRangeParams() {
+  const mode = getRangeMode();
+  if (mode === 'all') return { beg: '19900101', end: dateToYYYYMMDD(new Date()) };
+  if (mode === 'period') {
+    const b = document.getElementById('begDate').value;
+    const e = document.getElementById('endDate').value;
+    if (!b || !e) throw new Error('请选择起止日期');
+    if (b.replace(/-/g, '') > e.replace(/-/g, '')) throw new Error('起始日期不能晚于结束日期');
+    return { beg: b.replace(/-/g, ''), end: e.replace(/-/g, '') };
+  }
+  const tradingDays = estimateTradingDays();
+  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+  const bd = new Date();
+  bd.setDate(bd.getDate() - naturalDays);
+  return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()) };
+}
+
+// ============ 权重 ============
+function getWeights() {
+  const w = {};
+  FACTOR_DEFS.forEach(f => {
+    const el = document.getElementById('w_' + f.key);
+    w[f.key] = parseInt(el ? el.value : 0) || 0;
+  });
+  return w;
+}
+function resetWeights() {
+  Object.entries(DEFAULT_WEIGHTS).forEach(([k, val]) => {
+    const el = document.getElementById('w_' + k);
+    if (el) { el.value = val; document.getElementById('wv_' + k).textContent = val; }
+  });
+}
+function initWeightGrid() {
+  const grid = document.getElementById('weightGrid');
+  grid.innerHTML = FACTOR_DEFS.map(f => `
+    <div class="weight-item">
+      <span class="name" title="点击查看打分依据" style="cursor:pointer;"
+            onclick="showFactorDesc('${f.key}')">${f.name}</span>
+      <input type="range" id="w_${f.key}" min="0" max="30" value="${DEFAULT_WEIGHTS[f.key]}"
+             oninput="document.getElementById('wv_${f.key}').textContent=this.value">
+      <span class="val" id="wv_${f.key}">${DEFAULT_WEIGHTS[f.key]}</span>
+    </div>`).join('');
+}
+function showFactorDesc(key) {
+  const def = FACTOR_DEFS.find(f => f.key === key);
+  if (!def) return;
+  showErrorModal(`${def.name} · 打分规则\n\n${def.desc}`);
+}
+
+// ============ 回测核心 ============
+// 对单只股票：全量逐日评分 → 生成信号 → 评价 N 日收益
+function backtestOneStock(rows, info, weights, buyTh, sellTh, evalDays) {
+  // 附加 OBV 预计算（引擎 factorOBV 自动复用，避免每根K线 O(n²) 重建）
+  if (!rows.__obv) {
+    const obv = [0];
+    let val = 0;
+    for (let j = 1; j < rows.length; j++) {
+      const c = v(rows[j].close), pc = v(rows[j - 1].close);
+      const vol = v(rows[j].volume) || 0;
+      if (c != null && pc != null && vol > 0) {
+        if (c > pc) val += vol;
+        else if (c < pc) val -= vol;
+      }
+      obv.push(val);
+    }
+    rows.__obv = obv;
+  }
+
+  const signals = [];
+  let prevScore = null;
+  for (let t = 40; t < rows.length; t++) {
+    const { S, parts } = scoreAt(rows, t, weights, info);
+    if (prevScore != null) {
+      if (S >= buyTh && prevScore < buyTh - 8) {
+        signals.push({ t, type: 'buy', S, parts });
+      } else if (S <= sellTh && prevScore > sellTh + 8) {
+        signals.push({ t, type: 'sell', S, parts });
+      }
+    }
+    prevScore = S;
+  }
+
+  const results = [];
+  signals.forEach(sg => {
+    if (sg.t + evalDays < rows.length) {
+      const close0 = v(rows[sg.t].close);
+      const closeN = v(rows[sg.t + evalDays].close);
+      if (close0 != null && close0 > 0 && closeN != null) {
+        const retN = closeN / close0 - 1;
+        const hit = sg.type === 'buy' ? retN > 0 : retN < 0;
+        results.push({
+          symbol: info.symbol, name: info.name, date: rows[sg.t].date,
+          type: sg.type, S: sg.S, close: close0, retN, hit, parts: sg.parts,
+        });
+      }
+    }
+  });
+  return results;
+}
+
+// 因子有效性：命中组 vs 未命中组各因子平均分差（正=有效，负=反向）
+function factorAnalysis(results) {
+  const keys = FACTOR_DEFS.map(f => f.key);
+  const agg = {};
+  keys.forEach(k => agg[k] = { hitSum: 0, hitN: 0, missSum: 0, missN: 0 });
+  results.forEach(r => {
+    if (!r.parts) return;
+    r.parts.forEach(p => {
+      const a = agg[p.key];
+      if (!a || p.score == null) return;
+      if (r.hit) { a.hitSum += p.score; a.hitN++; }
+      else { a.missSum += p.score; a.missN++; }
+    });
+  });
+  return keys.map(k => {
+    const a = agg[k];
+    const hitAvg = a.hitN ? a.hitSum / a.hitN : null;
+    const missAvg = a.missN ? a.missSum / a.missN : null;
+    const delta = (hitAvg != null && missAvg != null) ? hitAvg - missAvg : null;
+    return {
+      key: k, name: (FACTOR_DEFS.find(f => f.key === k) || {}).name || k,
+      hitAvg, missAvg, delta,
+      hitN: a.hitN, missN: a.missN,
+    };
+  }).sort((a, b) => (b.delta == null ? -Infinity : b.delta) - (a.delta == null ? -Infinity : a.delta));
+}
+
+// 信号强度分档命中率
+function strengthBands(results, buyTh, sellTh) {
+  const bands = [
+    { key: 'buy25', label: '买入 25~35', type: 'buy', test: s => s >= buyTh && s < 35 },
+    { key: 'buy35', label: '买入 35~50', type: 'buy', test: s => s >= 35 && s < 50 },
+    { key: 'buy50', label: '买入 ≥50', type: 'buy', test: s => s >= 50 },
+    { key: 'sell25', label: '卖出 -35~-25', type: 'sell', test: s => s <= sellTh && s > -35 },
+    { key: 'sell35', label: '卖出 -50~-35', type: 'sell', test: s => s <= -35 && s > -50 },
+    { key: 'sell50', label: '卖出 ≤-50', type: 'sell', test: s => s <= -50 },
+  ];
+  return bands.map(b => {
+    const list = results.filter(r => r.type === b.type && b.test(r.S));
+    const cnt = list.length, hit = list.filter(r => r.hit).length;
+    const avgRet = cnt ? list.reduce((s, r) => s + r.retN, 0) / cnt : null;
+    const { test, ...rest } = b;
+    return {
+      ...rest, cnt, hit, rate: cnt ? hit / cnt * 100 : null,
+      avgRet: avgRet != null ? avgRet * 100 : null,
+    };
+  });
+}
+
+// ============ 主回测流程 ============
+let _allResults = [];
+async function runBacktest() {
+  const btn = document.getElementById('runBtn');
+  const statusEl = document.getElementById('runStatus');
+  const codes = getSelectedStocks();
+  if (!codes.length) { showError('请至少选择一只股票'); return; }
+
+  let buyTh, sellTh, evalDays;
+  try {
+    buyTh = parseInt(document.getElementById('buyTh').value) || 25;
+    sellTh = parseInt(document.getElementById('sellTh').value) || -25;
+    evalDays = parseInt(document.getElementById('evalDays').value) || 5;
+    if (buyTh <= sellTh) throw new Error('买入阈值必须大于卖出阈值');
+  } catch (e) { showError('参数错误: ' + e.message); return; }
+
+  let range;
+  try { range = buildRangeParams(); } catch (e) { showError(e.message); return; }
+
+  const weights = getWeights();
+  btn.disabled = true;
+  btn.textContent = '回测中...';
+  statusEl.textContent = '';
+
+  _allResults = [];
+  let done = 0;
+  for (const code of codes) {
+    statusEl.textContent = `正在回测 ${code}（${done + 1}/${codes.length}）...`;
+    try {
+      const res = await fetch(`${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`);
+      const data = await res.json();
+      if (data.error || !data.data || !data.data.length) { statusEl.textContent += ` ${code}无数据跳过`; done++; continue; }
+      const rows = data.data.map(k => ({
+        date: k.date,
+        open: v(k.open), close: v(k.close), high: v(k.high), low: v(k.low),
+        volume: v(k.volume), amount: v(k.amount), turnover: v(k.turnover),
+        pct_change: v(k.pct_change), change: v(k.change), amplitude: v(k.amplitude),
+        volume_ratio: v(k.volume_ratio),
+        main_net_inflow: v(k.main_net_inflow),
+        super_large_net_inflow: v(k.super_large_net_inflow),
+        large_net_inflow: v(k.large_net_inflow),
+        medium_net_inflow: v(k.medium_net_inflow),
+        small_net_inflow: v(k.small_net_inflow),
+        macd_dif: v(k.macd_dif), macd_dea: v(k.macd_dea), macd_hist: v(k.macd_hist),
+        ma5: v(k.ma5), ma10: v(k.ma10), ma20: v(k.ma20), ma30: v(k.ma30),
+        rsi6: v(k.rsi6), rsi12: v(k.rsi12), rsi14: v(k.rsi14), rsi24: v(k.rsi24),
+        kdj_k: v(k.kdj_k), kdj_d: v(k.kdj_d), kdj_j: v(k.kdj_j),
+        bias5: v(k.bias5), bias10: v(k.bias10), bias20: v(k.bias20),
+      }));
+      if (rows.length < 60) { statusEl.textContent += ` ${code}数据不足跳过`; done++; continue; }
+
+      let info = { symbol: code, name: data.stock?.name || code, industry: '', list_date: null, float_market_cap: null, total_market_cap: null };
+      try {
+        const ires = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
+        const idata = await ires.json();
+        if (!idata.error) info = { ...info, ...idata };
+      } catch (e) { console.warn('获取股票信息失败:', code, e); }
+
+      const resList = backtestOneStock(rows, info, weights, buyTh, sellTh, evalDays);
+      resList.forEach(r => _allResults.push(r));
+    } catch (e) {
+      statusEl.textContent += ` ${code}出错: ${e.message}`;
+    }
+    done++;
+    await new Promise(r => setTimeout(r, 0)); // 让出主线程刷新UI
+  }
+
+  btn.disabled = false;
+  btn.textContent = '开始回测';
+  statusEl.textContent = `完成：${_allResults.length} 个可评价信号`;
+  renderResults(buyTh, sellTh, evalDays, codes.length);
+}
+
+// ============ 结果渲染 ============
+function renderResults(buyTh, sellTh, evalDays, stockCnt) {
+  const results = _allResults;
+  const area = document.getElementById('resultArea');
+  const buy = results.filter(r => r.type === 'buy');
+  const sell = results.filter(r => r.type === 'sell');
+
+  const agg = list => {
+    const cnt = list.length;
+    const hit = list.filter(r => r.hit).length;
+    const avgRet = cnt ? list.reduce((s, r) => s + r.retN, 0) / cnt * 100 : null;
+    const winRet = list.filter(r => r.retN > 0).map(r => r.retN);
+    const lossRet = list.filter(r => r.retN <= 0).map(r => r.retN);
+    const avgWin = winRet.length ? winRet.reduce((a, b) => a + b, 0) / winRet.length * 100 : null;
+    const avgLoss = lossRet.length ? lossRet.reduce((a, b) => a + b, 0) / lossRet.length * 100 : null;
+    const plr = (avgWin != null && avgLoss != null && avgLoss !== 0) ? Math.abs(avgWin / avgLoss) : null;
+    return { cnt, hit, rate: cnt ? hit / cnt * 100 : null, avgRet, avgWin, avgLoss, plr };
+  };
+  const b = agg(buy), s = agg(sell);
+  const all = agg(results);
+
+  // 全样本基准：所有可评价日期的 N 日上涨比例（用于对比信号是否有区分度）
+  // 简化：用每只股票全样本 N 日涨跌方向采样——此处用信号样本同期的随机性说明，不额外计算
+  const chips = `
+    <div class="stat-chips">
+      <div class="chip"><span class="k">可评价信号</span><span class="v">${results.length}</span></div>
+      <div class="chip"><span class="k">买入信号数</span><span class="v up">${b.cnt}</span></div>
+      <div class="chip"><span class="k">买入命中率</span><span class="v up">${b.rate == null ? '-' : b.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">买入均收益(${evalDays}日)</span><span class="v ${b.avgRet >= 0 ? 'up' : 'down'}">${b.avgRet == null ? '-' : (b.avgRet >= 0 ? '+' : '') + b.avgRet.toFixed(2) + '%'}</span></div>
+      <div class="chip"><span class="k">买入盈亏比</span><span class="v">${b.plr == null ? '-' : b.plr.toFixed(2)}</span></div>
+      <div class="chip"><span class="k">卖出信号数</span><span class="v down">${s.cnt}</span></div>
+      <div class="chip"><span class="k">卖出命中率</span><span class="v down">${s.rate == null ? '-' : s.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">卖出均收益(${evalDays}日)</span><span class="v ${s.avgRet >= 0 ? 'up' : 'down'}">${s.avgRet == null ? '-' : (s.avgRet >= 0 ? '+' : '') + s.avgRet.toFixed(2) + '%'}</span></div>
+      <div class="chip"><span class="k">卖出盈亏比</span><span class="v">${s.plr == null ? '-' : s.plr.toFixed(2)}</span></div>
+    </div>`;
+
+  // 分股票统计
+  const byStock = {};
+  results.forEach(r => {
+    byStock[r.symbol] = byStock[r.symbol] || { symbol: r.symbol, name: r.name, buy: [], sell: [] };
+    byStock[r.symbol][r.type].push(r);
+  });
+  const stockRows = Object.values(byStock).map(st => {
+    const g = (type) => {
+      const list = st[type];
+      const cnt = list.length, hit = list.filter(r => r.hit).length;
+      const avgRet = cnt ? list.reduce((s, r) => s + r.retN, 0) / cnt * 100 : null;
+      return { cnt, hit, rate: cnt ? hit / cnt * 100 : null, avgRet };
+    };
+    const bb = g('buy'), ss = g('sell');
+    return `<tr>
+      <td>${st.symbol} ${st.name || ''}</td>
+      <td>${bb.cnt}</td>
+      <td class="${bb.rate == null ? '' : (bb.rate >= 50 ? 'up' : 'down')}">${bb.rate == null ? '-' : bb.rate.toFixed(1) + '%'}</td>
+      <td class="${bb.avgRet == null ? '' : (bb.avgRet >= 0 ? 'up' : 'down')}">${bb.avgRet == null ? '-' : (bb.avgRet >= 0 ? '+' : '') + bb.avgRet.toFixed(2) + '%'}</td>
+      <td>${ss.cnt}</td>
+      <td class="${ss.rate == null ? '' : (ss.rate >= 50 ? 'down' : 'up')}">${ss.rate == null ? '-' : ss.rate.toFixed(1) + '%'}</td>
+      <td class="${ss.avgRet == null ? '' : (ss.avgRet >= 0 ? 'up' : 'down')}">${ss.avgRet == null ? '-' : (ss.avgRet >= 0 ? '+' : '') + ss.avgRet.toFixed(2) + '%'}</td>
+    </tr>`;
+  }).join('');
+
+  // 因子有效性
+  const fa = factorAnalysis(results);
+  const faRows = fa.map(f => {
+    const good = f.delta != null && f.delta > 0.5;
+    const bad = f.delta != null && f.delta < -0.5;
+    return `<tr>
+      <td>${f.name}</td>
+      <td>${f.hitAvg == null ? '-' : f.hitAvg.toFixed(1)}</td>
+      <td>${f.missAvg == null ? '-' : f.missAvg.toFixed(1)}</td>
+      <td class="${f.delta == null ? '' : (f.delta >= 0 ? 'up' : 'down')}">${f.delta == null ? '-' : (f.delta >= 0 ? '+' : '') + f.delta.toFixed(1)}</td>
+      <td>${good ? '<span class="tag buy">有效</span>' : (bad ? '<span class="tag sell">反向</span>' : '<span style="color:#999">中性</span>')}</td>
+      <td>${f.hitN + f.missN}</td>
+    </tr>`;
+  }).join('');
+  const faGood = fa.filter(f => f.delta != null && f.delta > 0.5).map(f => f.name);
+  const faBad = fa.filter(f => f.delta != null && f.delta < -0.5).map(f => f.name);
+
+  // 强度分档
+  const bands = strengthBands(results, buyTh, sellTh);
+  const bandRows = bands.map(bn => `
+    <tr>
+      <td>${bn.label}</td>
+      <td class="${bn.type === 'buy' ? 'up' : 'down'}">${bn.type === 'buy' ? '买入' : '卖出'}</td>
+      <td>${bn.cnt}</td>
+      <td>${bn.rate == null ? '-' : bn.rate.toFixed(1) + '%'}</td>
+      <td>${bn.avgRet == null ? '-' : (bn.avgRet >= 0 ? '+' : '') + bn.avgRet.toFixed(2) + '%'}</td>
+    </tr>`).join('');
+
+  // 结论
+  const conclusion = buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt);
+
+  // 信号明细（分页）——必须在 area.innerHTML 赋值后再渲染（signalTableWrap 此时才存在）
+  const signalInit = () => renderSignalTable(results, evalDays);
+
+  area.innerHTML = `
+    <div class="panel">
+      <h2>回测汇总（${stockCnt} 只股票 | N=${evalDays} 日 | 信号口径 BUY≥${buyTh}/SELL≤${sellTh} 且跃升>8分）</h2>
+      ${chips}
+      <div class="note-box"><strong>找不足 · 结论：</strong>${conclusion}</div>
+    </div>
+
+    <div class="panel">
+      <h2>分股票统计</h2>
+      <table>
+        <thead><tr>
+          <th>股票</th><th>买入数</th><th>买入命中率</th><th>买入均收益</th>
+          <th>卖出数</th><th>卖出命中率</th><th>卖出均收益</th>
+        </tr></thead>
+        <tbody>${stockRows || '<tr><td colspan="7" style="color:#999; text-align:center;">无信号</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>信号强度分档（评分越强，命中率应越高）</h2>
+      <table>
+        <thead><tr><th>分档</th><th>方向</th><th>信号数</th><th>命中率</th><th>均收益</th></tr></thead>
+        <tbody>${bandRows}</tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>因子有效性（命中组均分 - 未命中组均分）</h2>
+      <div class="hint">正分利多设计下，delta 明显为正=因子有效（命中时因子得分更高）；明显为负=因子反向（需降权或反向理解）。供迭代权重参考。</div>
+      <table>
+        <thead><tr><th>因子</th><th>命中组均分</th><th>未命中组均分</th><th>delta</th><th>结论</th><th>样本</th></tr></thead>
+        <tbody>${faRows}</tbody>
+      </table>
+      <div class="factor-note">${faGood.length ? '表现好的因子：' + faGood.join('、') : ''}${faBad.length ? '。表现反的因子：' + faBad.join('、') : ''}</div>
+    </div>
+
+    <div class="panel">
+      <h2>信号收益分布（N=${evalDays}日）</h2>
+      <div class="chart-wrap"><div class="chart-canvas-wrap"><canvas id="retChart"></canvas></div></div>
+    </div>
+
+    <div class="panel">
+      <h2>信号明细（分页，按日期倒序）</h2>
+      <div id="signalTableWrap"></div>
+    </div>
+  `;
+
+  drawRetChart(results, evalDays);
+  signalInit();
+}
+
+function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt) {
+  const parts = [];
+  const base = 50; // 随机方向概率基准
+  if (b.cnt >= 10) {
+    const d = b.rate - base;
+    parts.push(`买入信号 ${b.cnt} 次命中率 ${b.rate.toFixed(1)}%（${d >= 0 ? '高于' : '低于'}随机基准50%${Math.abs(d).toFixed(1)}pt）`);
+    if (b.avgRet != null) parts.push(`买入均收益 ${b.avgRet >= 0 ? '+' : ''}${b.avgRet.toFixed(2)}%`);
+  } else if (b.cnt > 0) {
+    parts.push(`买入信号仅 ${b.cnt} 次（样本不足）`);
+  } else {
+    parts.push('买入信号为 0（阈值过严或数据特征所致）');
+  }
+  if (s.cnt >= 10) {
+    const d = s.rate - base;
+    parts.push(`卖出信号 ${s.cnt} 次命中率 ${s.rate.toFixed(1)}%（${d >= 0 ? '高于' : '低于'}随机基准${Math.abs(d).toFixed(1)}pt）`);
+    if (s.avgRet != null) parts.push(`卖出均收益 ${s.avgRet >= 0 ? '+' : ''}${s.avgRet.toFixed(2)}%（负值代表卖出后下跌、信号有效）`);
+  } else if (s.cnt > 0) {
+    parts.push(`卖出信号仅 ${s.cnt} 次（样本不足）`);
+  } else {
+    parts.push('卖出信号为 0');
+  }
+  if (faGood.length) parts.push(`有效因子：${faGood.join('、')}（可上调权重）`);
+  if (faBad.length) parts.push(`反向因子：${faBad.join('、')}（建议降权或反向理解）`);
+  if (!faGood.length && !faBad.length) parts.push('无明显有效/反向因子（样本少或因子区分度低）');
+  parts.push('命中率≈50%且收益≈0 时模型缺乏预测能力，需调整权重或阈值后重新回测对比');
+  return parts.join('；') + '。';
+}
+
+// ============ 信号明细分页 ============
+let _sigPage = 1, _sigPageSize = 20;
+function renderSignalTable(results, evalDays) {
+  _sigPage = 1;
+  _sigResults = [...results].sort((a, b) => {
+    if (b.date !== a.date) return b.date < a.date ? -1 : 1;
+    return b.symbol < a.symbol ? -1 : 1;
+  });
+  _sigEvalDays = evalDays;
+  drawSignalPage();
+}
+let _sigResults = [], _sigEvalDays = 5;
+function drawSignalPage(dir) {
+  if (dir === -1) _sigPage--;
+  else if (dir === 1) _sigPage++;
+  const wrap = document.getElementById('signalTableWrap');
+  if (!wrap) return;
+  const total = _sigResults.length;
+  const pages = Math.max(1, Math.ceil(total / _sigPageSize));
+  if (_sigPage > pages) _sigPage = pages;
+  if (_sigPage < 1) _sigPage = 1;
+  const list = _sigResults.slice((_sigPage - 1) * _sigPageSize, _sigPage * _sigPageSize);
+  const rows = list.map(r => `
+    <tr>
+      <td>${r.symbol} ${r.name || ''}</td>
+      <td>${r.date}</td>
+      <td><span class="tag ${r.type}">${r.type === 'buy' ? '买入' : '卖出'}</span></td>
+      <td class="${r.S >= 0 ? 'up' : 'down'}">${r.S >= 0 ? '+' : ''}${r.S.toFixed(0)}</td>
+      <td>${fmtNum(r.close)}</td>
+      <td class="${r.retN >= 0 ? 'up' : 'down'}">${r.retN >= 0 ? '+' : ''}${(r.retN * 100).toFixed(2)}%</td>
+      <td>${r.hit ? '<span class="tag buy">命中</span>' : '<span class="tag sell">未命中</span>'}</td>
+    </tr>`).join('');
+  wrap.innerHTML = `
+    <table>
+      <thead><tr><th>股票</th><th>信号日</th><th>信号</th><th>评分</th><th>收盘</th><th>${_sigEvalDays}日后涨跌</th><th>判定</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" style="color:#999; text-align:center;">无信号</td></tr>'}</tbody>
+    </table>
+    <div class="pager">
+      <button class="secondary" onclick="drawSignalPage(-1)" ${_sigPage <= 1 ? 'disabled' : ''}>上一页</button>
+      <span class="pg">第 ${_sigPage} / ${pages} 页（共 ${total} 条）</span>
+      <button class="secondary" onclick="drawSignalPage(1)" ${_sigPage >= pages ? 'disabled' : ''}>下一页</button>
+    </div>`;
+}
+
+// ============ 收益分布图 ============
+let _retChart = null;
+function drawRetChart(results, evalDays) {
+  const canvas = document.getElementById('retChart');
+  if (!canvas) return;
+  const buy = results.filter(r => r.type === 'buy').map(r => r.retN * 100);
+  const sell = results.filter(r => r.type === 'sell').map(r => r.retN * 100);
+  const buckets = [];
+  for (let i = -10; i <= 10; i += 1) buckets.push(`${i}~${i + 1}`);
+  const bin = (arr, lo, hi) => arr.filter(x => x >= lo && x < hi).length;
+  const buyData = buckets.map((_, idx) => bin(buy, -10 + idx, -10 + idx + 1));
+  const sellData = buckets.map((_, idx) => bin(sell, -10 + idx, -10 + idx + 1));
+
+  if (_retChart) _retChart.destroy();
+  _retChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: buckets,
+      datasets: [
+        { label: '买入信号', data: buyData, backgroundColor: 'rgba(232,69,60,0.65)' },
+        { label: '卖出信号', data: sellData, backgroundColor: 'rgba(52,168,83,0.65)' },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        x: { title: { display: true, text: `${evalDays}日收益率区间 (%)` } },
+        y: { title: { display: true, text: '信号数' }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+// ============ 页面初始化 ============
+loadStockList();
+initWeightGrid();
+(function initRangeUI() {
+  const today = new Date();
+  const halfYearAgo = new Date();
+  halfYearAgo.setDate(halfYearAgo.getDate() - 180);
+  document.getElementById('begDate').value = fmtDate(halfYearAgo);
+  document.getElementById('endDate').value = fmtDate(today);
+  updateRangeUI();
+})();
+</script>
+</body>
+</html>
