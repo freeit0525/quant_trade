@@ -7,7 +7,20 @@
   const KEY = 'query_history_v1';
 
   function load() {
-    try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; }
+    try {
+      const map = JSON.parse(localStorage.getItem(KEY)) || {};
+      // 清理无效记录：A股代码必须为6位数字，防止历史坏数据（如 "undefined"）残留并继续传播
+      let dirty = false;
+      for (const k of Object.keys(map)) {
+        const v = map[k] || {};
+        if (!/^\d{6}$/.test(String(k).trim()) || !/^\d{6}$/.test(String(v.code || '').trim())) {
+          delete map[k];
+          dirty = true;
+        }
+      }
+      if (dirty) save(map);
+      return map;
+    } catch (e) { return {}; }
   }
 
   function save(map) {
@@ -15,10 +28,10 @@
   }
 
   function record(code, name) {
-    if (!code) return;
+    // 仅记录合法A股代码（6位数字），避免把 undefined/空值等坏数据写入历史
+    const key = String(code || '').trim();
+    if (!/^\d{6}$/.test(key)) return;
     const map = load();
-    const key = String(code).trim();
-    if (!key) return;
     const cur = map[key] || { name: '', count: 0, lastTime: 0 };
     cur.count = (cur.count || 0) + 1;
     cur.lastTime = Date.now();

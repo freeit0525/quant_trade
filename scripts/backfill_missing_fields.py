@@ -277,6 +277,41 @@ def backfill_turnover_estimate(cur):
     print(f"换手率估算回填完成：更新 {updated} 行，不可估算保留 NULL {failed} 行")
 
 
+def backfill_fund_flow_em_overwrite(cur):
+    """用东财直连数据覆盖已有资金流（修正新浪源错误数据）
+
+    新浪 lscjfb 的净流入字段与东财口径差异巨大（实测方向都可能相反），
+    之前回退新浪入库导致库内近 120 个交易日资金流失真。
+    东财直连覆盖范围为接口返回的全部日期（约近 120 个交易日），幂等可重复跑。
+    """
+    from data.fetcher import DataFetcher
+
+    cur.execute("SELECT DISTINCT symbol FROM market_data.daily_kline ORDER BY symbol")
+    symbols = [r[0] for r in cur.fetchall()]
+    fetcher = DataFetcher()
+    updated = 0
+    for symbol in symbols:
+        ff = fetcher._fetch_fund_flow_via_eastmoney(symbol)
+        if ff is None or ff.empty:
+            print(f"  !! {symbol} 东财资金流为空，跳过")
+            continue
+        for _, row in ff.iterrows():
+            cur.execute(
+                """UPDATE market_data.daily_kline
+                   SET main_net_inflow=%s, super_large_net_inflow=%s,
+                       large_net_inflow=%s, medium_net_inflow=%s, small_net_inflow=%s
+                   WHERE symbol=%s AND trade_date=%s""",
+                (
+                    float(row["main_net_inflow"]), float(row["super_large_net_inflow"]),
+                    float(row["large_net_inflow"]), float(row["medium_net_inflow"]),
+                    float(row["small_net_inflow"]), symbol, row["date"].date(),
+                ),
+            )
+            updated += cur.rowcount
+        print(f"  {symbol}: 东财资金流 {len(ff)} 行已覆盖")
+    print(f"东财资金流覆盖回填完成：更新 {updated} 行")
+
+
 def main():
     conn = get_connection()
     conn.autocommit = True
@@ -284,6 +319,7 @@ def main():
     try:
         backfill_pct_fields(cur)
         backfill_fund_flow(cur)
+        backfill_fund_flow_em_overwrite(cur)
         backfill_amplitude(cur)
         backfill_turnover_estimate(cur)
     finally:

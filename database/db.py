@@ -712,3 +712,464 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
         )
     logger.info(f"日K线已入库: {symbol} {len(rows)} 条")
     return len(rows)
+
+
+# ============================================================
+# 买卖点预测记录 CRUD（含次日自动复盘）
+# ============================================================
+
+# 方向代码 -> 统计用方向分组（观望不计命中）
+_PRED_BUY_CODES = ("buy", "watch_buy")
+_PRED_SELL_CODES = ("sell", "watch_sell")
+
+
+def classify_trend(prev: dict, cur: dict) -> str:
+    """根据两日K线判定当日走势形态（前后端一致，供复盘使用）
+
+    Args:
+        prev: 前一交易日 {open, high, low, close, volume}
+        cur:  当日 {open, high, low, close, volume}
+
+    Returns:
+        形态key: surge_up放量大涨 / gap_up_high高开高走 / open_high平开高走 /
+                 dip_recover探底回升 / range日内震荡 / rise_fall冲高回落 /
+                 gap_up_low高开低走 / open_low低开低走 / surge_down放量大跌
+    """
+    try:
+        prev_close = float(prev["close"])
+        o, h, l, c = (float(cur[k]) for k in ("open", "high", "low", "close"))
+        prev_vol = float(prev.get("volume") or 0)
+        cur_vol = float(cur.get("volume") or 0)
+    except (KeyError, TypeError, ValueError):
+        return "range"
+    if prev_close <= 0 or h <= l:
+        return "range"
+    pct = (c / prev_close - 1) * 100
+    body = c - o
+    gap = (o / prev_close - 1) * 100          # 高开/低开幅度
+    amplitude = h - l
+    upper = h - max(o, c)                     # 上影线长度
+    lower = min(o, c) - l                     # 下影线长度
+    surge = (cur_vol > 0 and prev_vol > 0 and cur_vol >= prev_vol * 1.5) or amplitude > 0.06 * prev_close
+    # 判定优先级：放量极端方向 > 高开方向 > 低开方向 > 平开影线/实体
+    if pct >= 3 and surge:
+        return "surge_up"
+    if pct <= -3 and surge:
+        return "surge_down"
+    if gap >= 0.8:                            # 高开
+        if c > o and pct >= 1.5:
+            return "gap_up_high"              # 高开高走
+        return "gap_up_low"                   # 高开低走（含高开冲高回落）
+    if gap <= -0.8:                           # 低开
+        if c > o and (lower >= 0.45 * amplitude or pct >= 1.5):
+            return "dip_recover"              # 探底回升（低开反包）
+        return "open_low"                     # 低开低走
+    # 平开附近：先看影线结构，再看实体方向
+    if c < o and upper >= 0.6 * amplitude:
+        return "rise_fall"                    # 长上影收阴：冲高回落
+    if c > o and lower >= 0.6 * amplitude:
+        return "dip_recover"                  # 长下影收阳：探底回升
+    if c > o and pct >= 1.5 and upper <= 0.4 * amplitude:
+        return "open_high"                    # 平开高走
+    if c < o and pct <= -1.5:
+        return "open_low"                     # 平开低走
+    return "range"                            # 日内震荡
+
+
+# 形态中文名（与前端一致）
+TREND_NAMES = {
+    "surge_up": "放量大涨", "gap_up_high": "高开高走", "open_high": "平开高走",
+    "dip_recover": "探底回升", "range": "日内震荡", "rise_fall": "冲高回落",
+    "gap_up_low": "高开低走", "open_low": "低开低走", "surge_down": "放量大跌",
+}
+
+
+def save_prediction(
+    symbol: str,
+    based_date: str,
+    predict_date: str,
+    action: str,
+    action_code: str,
+    name: str | None = None,
+    score: float | None = None,
+    prob_up: float | None = None,
+    close: float | None = None,
+    support_price: float | None = None,
+    support2_price: float | None = None,
+    resistance_price: float | None = None,
+    resistance2_price: float | None = None,
+    stop_loss: float | None = None,
+    factors: list | None = None,
+    weights: dict | None = None,
+    trend: str | None = None,
+    trend_probs: dict | None = None,
+    trend_strategy: str | None = None,
+    config: DatabaseConfig | None = None,
+) -> int:
+    """保存/更新预测结论（同一股票同一基于日期只保留一条，重复保存覆盖）
+
+    Args:
+        symbol: 股票代码
+        based_date: 预测依据的最新收盘日 'YYYY-MM-DD'
+        predict_date: 预测目标日（下一交易日）'YYYY-MM-DD'
+        action: 结论文案（建议买入/偏多关注/观望/偏空警惕/建议卖出）
+        action_code: 方向代码 buy/watch_buy/hold/watch_sell/sell
+        factors/weights: 因子得分与权重（JSON 序列化落库）
+
+    Returns:
+        预测记录ID
+    """
+    import json
+
+    with db_cursor(config) as cur:
+        cur.execute(
+            """INSERT INTO market_data.predictions
+               (symbol, name, based_date, predict_date, action, action_code, score, prob_up,
+                close, support_price, support2_price, resistance_price, resistance2_price,
+                stop_loss, factors, weights, trend, trend_probs, trend_strategy)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (symbol, based_date) DO UPDATE SET
+                   name = EXCLUDED.name,
+                   predict_date = EXCLUDED.predict_date,
+                   action = EXCLUDED.action,
+                   action_code = EXCLUDED.action_code,
+                   score = EXCLUDED.score,
+                   prob_up = EXCLUDED.prob_up,
+                   close = EXCLUDED.close,
+                   support_price = EXCLUDED.support_price,
+                   support2_price = EXCLUDED.support2_price,
+                   resistance_price = EXCLUDED.resistance_price,
+                   resistance2_price = EXCLUDED.resistance2_price,
+                   stop_loss = EXCLUDED.stop_loss,
+                   factors = EXCLUDED.factors,
+                   weights = EXCLUDED.weights,
+                   trend = EXCLUDED.trend,
+                   trend_probs = EXCLUDED.trend_probs,
+                   trend_strategy = EXCLUDED.trend_strategy,
+                   updated_at = CURRENT_TIMESTAMP
+               RETURNING id""",
+            (
+                symbol, name, based_date, predict_date, action, action_code,
+                float(score) if score is not None else None,
+                float(prob_up) if prob_up is not None else None,
+                float(close) if close is not None else None,
+                float(support_price) if support_price is not None else None,
+                float(support2_price) if support2_price is not None else None,
+                float(resistance_price) if resistance_price is not None else None,
+                float(resistance2_price) if resistance2_price is not None else None,
+                float(stop_loss) if stop_loss is not None else None,
+                json.dumps(factors, ensure_ascii=False) if factors is not None else None,
+                json.dumps(weights, ensure_ascii=False) if weights is not None else None,
+                trend,
+                json.dumps(trend_probs, ensure_ascii=False) if trend_probs is not None else None,
+                trend_strategy,
+            ),
+        )
+        pred_id = cur.fetchone()[0]
+    logger.info(f"预测结论已保存: {symbol} based={based_date} action={action}, id={pred_id}")
+    return pred_id
+
+
+def _review_predictions(config: DatabaseConfig | None = None) -> int:
+    """对未复盘的预测记录自动复盘（幂等）
+
+    用库中 K 线找到基于日期之后的首个实际交易日，比较其收盘涨跌与预测方向：
+    - 买入方向(buy/watch_buy)：实际涨 > 0 记命中
+    - 卖出方向(sell/watch_sell)：实际涨 < 0 记命中
+    - 观望(hold)：记录实际涨跌但不计命中(hit=null)
+
+    Returns:
+        本次新复盘完成的记录数
+    """
+    import bisect
+
+    with db_cursor(config) as cur:
+        cur.execute(
+            "SELECT id, symbol, based_date, action_code, trend FROM market_data.predictions WHERE review_date IS NULL"
+        )
+        pending = cur.fetchall()
+        if not pending:
+            return 0
+
+        # 每个涉及股票加载全量 (trade_date, open, high, low, close, volume) 排序列表，二分定位复盘日
+        symbols = sorted({r[1] for r in pending})
+        klines: dict[str, list] = {}
+        for sym in symbols:
+            cur.execute(
+                "SELECT trade_date, open, high, low, close, volume FROM market_data.daily_kline WHERE symbol = %s ORDER BY trade_date",
+                (sym,),
+            )
+            klines[sym] = cur.fetchall()
+
+        reviewed = 0
+        for pid, sym, based_date, action_code, trend in pending:
+            kk = klines.get(sym)
+            if not kk:
+                continue
+            dates = [d for d, *_ in kk]
+            # 基于日期后的首个交易日（严格大于）
+            ridx = bisect.bisect_right(dates, based_date)
+            if ridx >= len(kk):
+                continue  # 目标日数据尚未入库，等下次复盘
+            # 基于日期当天K线（作为涨跌基准与形态 prev）
+            bidx = bisect.bisect_left(dates, based_date)
+            if bidx >= len(kk) or dates[bidx] != based_date:
+                continue  # 基于日期不在库中，无法计算基准
+            base_row, review_row = kk[bidx], kk[ridx]
+            base_close = base_row[4]
+            review_close = review_row[4]
+            if base_close is None or review_close is None or base_close == 0:
+                continue
+            pct = float(review_close) / float(base_close) - 1
+            if action_code in _PRED_BUY_CODES:
+                hit = pct > 0
+            elif action_code in _PRED_SELL_CODES:
+                hit = pct < 0
+            else:
+                hit = None  # 观望：记录涨跌但不计命中
+            # 走势形态复盘：用基于日与复盘日两日K线判定实际形态
+            prev_d = {"open": base_row[1], "high": base_row[2], "low": base_row[3],
+                      "close": base_row[4], "volume": base_row[5]}
+            cur_d = {"open": review_row[1], "high": review_row[2], "low": review_row[3],
+                     "close": review_row[4], "volume": review_row[5]}
+            actual_trend = classify_trend(prev_d, cur_d)
+            trend_hit = (trend == actual_trend) if trend and actual_trend else None
+            cur.execute(
+                """UPDATE market_data.predictions
+                   SET review_date = %s, actual_close = %s, actual_pct = %s,
+                       hit = %s, actual_trend = %s, trend_hit = %s,
+                       reviewed_at = CURRENT_TIMESTAMP
+                   WHERE id = %s""",
+                (kk[ridx][0], review_close, round(pct * 100, 4), hit,
+                 actual_trend, trend_hit, pid),
+            )
+            reviewed += 1
+        if reviewed:
+            logger.info(f"自动复盘完成 {reviewed} 条预测记录")
+        return reviewed
+
+
+_PRED_COLUMNS = (
+    "id, symbol, name, based_date, predict_date, action, action_code, score, prob_up, close, "
+    "support_price, support2_price, resistance_price, resistance2_price, stop_loss, factors, weights, "
+    "trend, trend_probs, trend_strategy, actual_trend, trend_hit, "
+    "review_date, actual_close, actual_pct, hit, created_at, updated_at"
+)
+
+
+def get_predictions(
+    symbol: str | None = None,
+    limit: int = 100,
+    config: DatabaseConfig | None = None,
+) -> list[dict]:
+    """获取预测记录列表（先自动复盘未复盘记录）
+
+    Args:
+        symbol: 股票代码过滤（可选）
+        limit: 返回条数上限
+
+    Returns:
+        按基于日期倒序的预测记录列表，日期字段为 'YYYY-MM-DD'，JSON 字段已解析
+    """
+    import json
+
+    _review_predictions(config)
+    with db_cursor(config) as cur:
+        sql = f"SELECT {_PRED_COLUMNS} FROM market_data.predictions"
+        args: list = []
+        if symbol:
+            sql += " WHERE symbol = %s"
+            args.append(symbol)
+        sql += " ORDER BY based_date DESC, id DESC LIMIT %s"
+        args.append(limit)
+        cur.execute(sql, args)
+        columns = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(zip(columns, row))
+        for key in ("factors", "weights", "trend_probs"):
+            if isinstance(d.get(key), str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (ValueError, TypeError):
+                    d[key] = None
+        for key in ("based_date", "predict_date", "review_date"):
+            if d.get(key):
+                d[key] = d[key].strftime("%Y-%m-%d")
+        for key in ("created_at", "updated_at", "reviewed_at"):
+            if d.get(key):
+                d[key] = d[key].strftime("%Y-%m-%d %H:%M")
+        for key in ("score", "prob_up", "close", "support_price", "support2_price",
+                    "resistance_price", "resistance2_price", "stop_loss",
+                    "actual_close", "actual_pct"):
+            if d.get(key) is not None:
+                d[key] = float(d[key])
+        result.append(d)
+    return result
+
+
+def get_prediction_stats(config: DatabaseConfig | None = None) -> dict:
+    """预测记录汇总统计（供迭代总结/生成量化策略建议）
+
+    先自动复盘，再统计：
+    - 总体/按方向/按股票的命中率
+    - 因子有效性：命中与未命中记录中各因子平均得分的差异（正=因子方向正确，负=需反向）
+    - 基于样本量给出量化策略建议文案
+    """
+    import json
+
+    _review_predictions(config)
+
+    def _rate(hits, reviewed):
+        return round(hits / reviewed * 100, 1) if reviewed else None
+
+    with db_cursor(config) as cur:
+        cur.execute(
+            """SELECT COUNT(*),
+                      COUNT(review_date),
+                      COUNT(*) FILTER (WHERE hit = TRUE),
+                      COUNT(*) FILTER (WHERE hit = FALSE),
+                      COUNT(trend),
+                      COUNT(trend_hit),
+                      COUNT(*) FILTER (WHERE trend_hit = TRUE)
+               FROM market_data.predictions"""
+        )
+        total, reviewed, hits, misses, trend_total, trend_reviewed, trend_hits = cur.fetchone()
+
+        cur.execute(
+            """SELECT action, action_code, COUNT(*),
+                      COUNT(review_date),
+                      COUNT(*) FILTER (WHERE hit = TRUE),
+                      COUNT(*) FILTER (WHERE hit = FALSE),
+                      ROUND(AVG(actual_pct) FILTER (WHERE review_date IS NOT NULL)::numeric, 4)
+               FROM market_data.predictions
+               GROUP BY action, action_code ORDER BY COUNT(*) DESC"""
+        )
+        by_action = [
+            {
+                "action": r[0], "action_code": r[1], "total": r[2],
+                "reviewed": r[3], "hits": r[4], "misses": r[5],
+                "hit_rate": _rate(r[4], r[3]),
+                "avg_pct": float(r[6]) if r[6] is not None else None,
+            }
+            for r in cur.fetchall()
+        ]
+
+        cur.execute(
+            """SELECT symbol, name, COUNT(*),
+                      COUNT(review_date),
+                      COUNT(*) FILTER (WHERE hit = TRUE),
+                      COUNT(*) FILTER (WHERE hit = FALSE)
+               FROM market_data.predictions
+               GROUP BY symbol, name ORDER BY COUNT(*) DESC LIMIT 20"""
+        )
+        by_symbol = [
+            {
+                "symbol": r[0], "name": r[1], "total": r[2],
+                "reviewed": r[3], "hits": r[4], "misses": r[5],
+                "hit_rate": _rate(r[4], r[3]),
+            }
+            for r in cur.fetchall()
+        ]
+
+        # 命中/未命中记录的各因子得分，用于迭代总结因子有效性
+        cur.execute(
+            """SELECT hit, factors FROM market_data.predictions
+               WHERE review_date IS NOT NULL AND hit IS NOT NULL AND factors IS NOT NULL"""
+        )
+        hit_rows = cur.fetchall()
+
+    def _agg_group(hit_rows, target_hit):
+        agg: dict[str, list[float]] = {}
+        for hit, factors in hit_rows:
+            if hit is not target_hit or not isinstance(factors, str):
+                continue
+            try:
+                factors = json.loads(factors)
+            except (ValueError, TypeError):
+                continue
+            for f in factors or []:
+                if not isinstance(f, dict) or f.get("score") is None:
+                    continue
+                agg.setdefault(f.get("key") or f.get("name"), []).append(float(f["score"]))
+        return {k: sum(v) / len(v) for k, v in agg.items()}
+
+    factor_aligned, factor_inverted = [], []
+    if hit_rows:
+        hit_avg = _agg_group(hit_rows, True)
+        miss_avg = _agg_group(hit_rows, False)
+        deltas = []
+        for key in set(hit_avg) | set(miss_avg):
+            if key not in hit_avg or key not in miss_avg:
+                continue
+            deltas.append({"key": key, "hit_avg": round(hit_avg[key], 1),
+                           "miss_avg": round(miss_avg[key], 1),
+                           "delta": round(hit_avg[key] - miss_avg[key], 1)})
+        deltas.sort(key=lambda d: abs(d["delta"]), reverse=True)
+        factor_aligned = [d for d in deltas if d["delta"] > 0][:3]
+        factor_inverted = [d for d in deltas if d["delta"] < 0][:3]
+
+    # 买入/卖出方向汇总（供策略建议）
+    buy = next((a for a in by_action if a["action_code"] in _PRED_BUY_CODES and a["reviewed"]), None)
+    sell = next((a for a in by_action if a["action_code"] in _PRED_SELL_CODES and a["reviewed"]), None)
+    buy_rate = _rate(buy["hits"], buy["reviewed"]) if buy else None
+    sell_rate = _rate(sell["hits"], sell["reviewed"]) if sell else None
+
+    # 量化策略建议（随样本量增长逐步收敛）
+    trend_rate = _rate(trend_hits, trend_reviewed)
+    suggestion = _build_strategy_suggestion(
+        total=total, reviewed=reviewed, hit_rate=_rate(hits, reviewed),
+        buy_rate=buy_rate, sell_rate=sell_rate,
+        trend_rate=trend_rate, trend_reviewed=trend_reviewed,
+        factor_aligned=factor_aligned, factor_inverted=factor_inverted,
+    )
+
+    return {
+        "total": total, "reviewed": reviewed, "hits": hits, "misses": misses,
+        "hit_rate": _rate(hits, reviewed),
+        "trend": {"total": trend_total, "reviewed": trend_reviewed,
+                  "hits": trend_hits, "hit_rate": trend_rate},
+        "buy": {"hits": buy["hits"] if buy else 0, "reviewed": buy["reviewed"] if buy else 0,
+                "hit_rate": buy_rate,
+                "avg_pct": buy["avg_pct"] if buy else None},
+        "sell": {"hits": sell["hits"] if sell else 0, "reviewed": sell["reviewed"] if sell else 0,
+                 "hit_rate": sell_rate,
+                 "avg_pct": sell["avg_pct"] if sell else None},
+        "by_action": by_action,
+        "by_symbol": by_symbol,
+        "factor_aligned": factor_aligned,
+        "factor_inverted": factor_inverted,
+        "suggestion": suggestion,
+    }
+
+
+def _build_strategy_suggestion(
+    total: int, reviewed: int, hit_rate: float | None,
+    buy_rate: float | None, sell_rate: float | None,
+    trend_rate: float | None, trend_reviewed: int,
+    factor_aligned: list, factor_inverted: list,
+) -> str:
+    """根据复盘样本生成量化策略建议文案（样本越多建议越具体）"""
+    if reviewed < 5:
+        return (f"复盘样本不足（已复盘 {reviewed}/{total} 条，需≥5条）。"
+                "继续每天保存预测结论，次日自动复盘，样本积累后自动给出量化策略。")
+    parts = [f"已复盘 {reviewed} 条，总体命中率 {hit_rate}%"]
+    if buy_rate is not None:
+        parts.append(f"买入信号命中率 {buy_rate}%（方向正确率，非收益率）")
+    if sell_rate is not None:
+        parts.append(f"卖出信号命中率 {sell_rate}%")
+    strategy = "可轻仓跟随买入信号" if buy_rate and buy_rate >= 55 else "买入信号暂不可靠，谨慎观望"
+    strategy += "；" + ("卖出信号可信" if sell_rate and sell_rate >= 55 else "卖出信号参考性弱") + "。"
+    if trend_rate is not None and trend_reviewed >= 5:
+        strategy += (f"走势形态预测命中率 {trend_rate}%（{trend_reviewed}次），"
+                     + ("可作为次日操盘预案参考。" if trend_rate >= 45 else "暂不可靠，仅作风格提示。"))
+    if factor_aligned:
+        good = "、".join(f["key"] for f in factor_aligned)
+        strategy += f"表现好的因子：{good}，可上调权重。"
+    if factor_inverted:
+        bad = "、".join(f["key"] for f in factor_inverted)
+        strategy += f"表现反的因子：{bad}，建议降权或反向理解。"
+    return "，".join(parts) + "。" + strategy
+

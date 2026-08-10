@@ -794,17 +794,70 @@ class DataFetcher:
     def _fetch_fund_flow(self, symbol: str) -> pd.DataFrame:
         """获取个股资金流向，返回标准化DataFrame（date + 5个净流入列，单位元）
 
-        优先 akshare(东方财富)，失败时回退新浪 lscjfb 接口；
-        akshare 处于熔断期时直接使用新浪。
+        回退链：东财直连（curl_cffi，实测可用且口径准确）→ akshare(东方财富) → 新浪 lscjfb。
+        新浪 lscjfb 的净流入字段与东财差异巨大（方向都可能相反），仅作最后兜底。
         """
-        if _source_skip(_source_key("akshare")):
-            logger.info(f"资金流 akshare 源处于熔断期，直接用新浪: {symbol}")
-            return self._fetch_fund_flow_via_sina(symbol)
-        df = self._fetch_fund_flow_via_akshare(symbol)
-        if df.empty:
-            logger.warning(f"akshare资金流向不可用，回退新浪数据源: {symbol}")
-            df = self._fetch_fund_flow_via_sina(symbol)
-        return df
+        if not _source_skip("eastmoney"):
+            df = self._fetch_fund_flow_via_eastmoney(symbol)
+            if not df.empty:
+                return df
+        if not _source_skip(_source_key("akshare")):
+            df = self._fetch_fund_flow_via_akshare(symbol)
+            if not df.empty:
+                return df
+        logger.warning(f"资金流 akshare/东财直连均不可用，回退新浪数据源: {symbol}")
+        return self._fetch_fund_flow_via_sina(symbol)
+
+    def _fetch_fund_flow_via_eastmoney(self, symbol: str) -> pd.DataFrame:
+        """通过东财直连接口获取个股资金流（近约120个交易日），返回标准化DataFrame
+
+        接口: push2his.eastmoney.com/api/qt/stock/fflow/daykline/get
+        fields2: f51日期 f52主力净流入 f53小单 f54中单 f55大单 f56超大单（单位: 元）
+        实测四类(超大+大+中+小)净流入合计≈0，数据自洽；新浪源则严重失衡不可用。
+        """
+        secid = ("1." if symbol.startswith(("6", "9")) else "0.") + symbol
+        url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+        try:
+            resp = _em_get_with_retry(url, {
+                "lmt": "0", "klt": "101",
+                "fields1": "f1,f2,f3,f7",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+                "secid": secid,
+            }, retries=2, timeout=10)
+            klines = (resp.json().get("data") or {}).get("klines") or []
+            if not klines:
+                logger.warning(f"东财直连资金流无数据: {symbol}")
+                return pd.DataFrame()
+            rows = []
+            for line in klines:
+                parts = line.split(",")
+                if len(parts) < 6:
+                    continue
+                try:
+                    main_ = float(parts[1])
+                    small_ = float(parts[2])
+                    medium_ = float(parts[3])
+                    large_ = float(parts[4])
+                    super_ = float(parts[5])
+                except (ValueError, IndexError):
+                    continue
+                rows.append({
+                    "date": pd.to_datetime(parts[0]),
+                    "main_net_inflow": main_,
+                    "super_large_net_inflow": super_,
+                    "large_net_inflow": large_,
+                    "medium_net_inflow": medium_,
+                    "small_net_inflow": small_,
+                })
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+            logger.info(f"东财直连资金流获取成功: {symbol} {len(df)} 条")
+            return df
+        except Exception as e:
+            _source_fail("eastmoney")
+            logger.warning(f"东财直连资金流获取失败 {symbol}: {e}")
+            return pd.DataFrame()
 
     def _fetch_fund_flow_via_akshare(self, symbol: str, timeout: float = 8.0) -> pd.DataFrame:
         """通过 akshare 获取个股资金流向（近100个交易日），返回标准化DataFrame

@@ -88,6 +88,16 @@ def _secid(code: str) -> str:
     return f"0.{code}"
 
 
+def _opt_float(x):
+    """把可选数值参数转成 float，空/非法返回 None"""
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
 class QuantHandler(SimpleHTTPRequestHandler):
     """静态文件 + 数据API 处理器"""
 
@@ -140,6 +150,10 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_strategies(params)
             elif parsed.path == "/api/backtest/results":
                 self.api_backtest_results(params)
+            elif parsed.path == "/api/predictions":
+                self.api_predictions(params)
+            elif parsed.path == "/api/predictions/stats":
+                self.api_predictions_stats(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -161,6 +175,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_strategy_delete(body)
             elif parsed.path == "/api/backtest/result":
                 self.api_backtest_result_save(body)
+            elif parsed.path == "/api/predict/save":
+                self.api_predict_save(body)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -274,6 +290,75 @@ class QuantHandler(SimpleHTTPRequestHandler):
             params=body.get("params") or {},
         )
         self._send_json({"ok": True, "id": result_id, "message": "回测结果已保存"}, 200)
+
+    def api_predict_save(self, body: dict):
+        """保存买卖点预测结论
+
+        请求: {symbol, name?, based_date, predict_date, action, action_code,
+               score?, prob_up?, close?, support_price?, support2_price?,
+               resistance_price?, resistance2_price?, stop_loss?, factors?, weights?}
+        同一股票同一 based_date 重复保存会覆盖更新。
+        """
+        from database.db import save_prediction
+
+        required = ["symbol", "based_date", "predict_date", "action", "action_code"]
+        for key in required:
+            if not body.get(key):
+                self._send_json({"error": f"缺少参数 {key}"}, 400)
+                return
+        try:
+            pred_id = save_prediction(
+                symbol=str(body["symbol"]).strip(),
+                name=(body.get("name") or "").strip() or None,
+                based_date=str(body["based_date"]),
+                predict_date=str(body["predict_date"]),
+                action=str(body["action"]).strip(),
+                action_code=str(body["action_code"]).strip(),
+                score=_opt_float(body.get("score")),
+                prob_up=_opt_float(body.get("prob_up")),
+                close=_opt_float(body.get("close")),
+                support_price=_opt_float(body.get("support_price")),
+                support2_price=_opt_float(body.get("support2_price")),
+                resistance_price=_opt_float(body.get("resistance_price")),
+                resistance2_price=_opt_float(body.get("resistance2_price")),
+                stop_loss=_opt_float(body.get("stop_loss")),
+                factors=body.get("factors") or [],
+                weights=body.get("weights") or {},
+                trend=(body.get("trend") or "").strip() or None,
+                trend_probs=body.get("trend_probs") or {},
+                trend_strategy=body.get("trend_strategy") or None,
+            )
+        except Exception as e:
+            logger.exception("保存预测结论失败: %s", e)
+            self._send_json({"error": f"保存失败: {e}"}, 500)
+            return
+        self._send_json({"ok": True, "id": pred_id, "message": "预测结论已保存，次日自动复盘"}, 200)
+
+    def api_predictions(self, params: dict):
+        """获取预测记录列表（自动复盘未复盘记录）
+
+        参数: symbol=股票代码(可选), limit=条数(默认100)
+        返回: {data: [{id,symbol,name,based_date,predict_date,action,action_code,score,
+                       prob_up,close,support_price,resistance_price,stop_loss,
+                       review_date,actual_close,actual_pct,hit,factor...}]}
+        """
+        from database.db import get_predictions
+
+        symbol = (params.get("symbol") or "").strip() or None
+        limit = 100
+        if params.get("limit"):
+            try:
+                limit = min(int(params["limit"]), 500)
+            except (TypeError, ValueError):
+                pass
+        data = get_predictions(symbol=symbol, limit=limit)
+        self._send_json({"data": data}, 200)
+
+    def api_predictions_stats(self, params: dict):
+        """预测记录汇总统计（自动复盘后计算命中率/因子有效性/策略建议）"""
+        from database.db import get_prediction_stats
+
+        self._send_json(get_prediction_stats(), 200)
 
     def api_strategy_save(self, body: dict):
         """保存策略：{strategy_name, strategy_type, params, description?} → 返回 {id}"""
@@ -465,10 +550,11 @@ class QuantHandler(SimpleHTTPRequestHandler):
         self._send_json({"data": stocks}, 200)
 
     def api_stock_info(self, params: dict):
-        """查询股票基本信息（含上市日期，来自库表 stock_info）
+        """查询股票基本信息（含上市日期、股本、市值，来自库表 stock_info）
 
         参数: code=股票代码
-        返回: {symbol,name,market,list_date,industry}，list_date 为 'YYYY-MM-DD' 或 null
+        返回: {symbol,name,market,list_date,industry,total_share,float_share,
+               total_market_cap,float_market_cap}，list_date 为 'YYYY-MM-DD' 或 null
         """
         code = (params.get("code") or "").strip()
         if not code:
@@ -479,7 +565,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
 
         with db_cursor() as cur:
             cur.execute(
-                """SELECT symbol, name, market, list_date, industry
+                """SELECT symbol, name, market, list_date, industry,
+                          total_share, float_share, total_market_cap, float_market_cap
                    FROM market_data.stock_info WHERE symbol = %s""",
                 (code,),
             )
@@ -493,6 +580,10 @@ class QuantHandler(SimpleHTTPRequestHandler):
             "market": row[2],
             "list_date": row[3].strftime("%Y-%m-%d") if row[3] else None,
             "industry": row[4],
+            "total_share": float(row[5]) if row[5] else None,
+            "float_share": float(row[6]) if row[6] else None,
+            "total_market_cap": float(row[7]) if row[7] else None,
+            "float_market_cap": float(row[8]) if row[8] else None,
         }, 200)
 
     def api_sources(self, params: dict):

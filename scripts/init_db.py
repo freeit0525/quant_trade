@@ -19,6 +19,7 @@ TABLE_COMMENTS = {
     "market_data.stock_info": "股票基本信息表",
     "market_data.concept": "概念板块表",
     "market_data.stock_concept": "股票-概念关联表",
+    "market_data.predictions": "买卖点预测记录表（含次日复盘结果）",
     "backtest.results": "回测结果表",
     "backtest.trades": "回测交易记录表",
     "backtest.nav": "回测每日净值表",
@@ -72,6 +73,37 @@ COLUMN_COMMENTS = {
     "market_data.stock_concept": {
         "symbol": "股票代码",
         "concept_id": "概念板块ID（关联 market_data.concept.id）",
+    },
+    "market_data.predictions": {
+        "id": "主键",
+        "symbol": "股票代码",
+        "name": "股票名称",
+        "based_date": "预测依据的最新收盘日",
+        "predict_date": "预测目标日（下一交易日）",
+        "action": "结论（建议买入/偏多关注/观望/偏空警惕/建议卖出）",
+        "action_code": "方向代码（buy/watch_buy/hold/watch_sell/sell）",
+        "score": "11因子综合评分（-100~100，正多负空）",
+        "prob_up": "次日上涨概率（%）",
+        "close": "预测时收盘价（元）",
+        "support_price": "第一支撑位（元）",
+        "support2_price": "第二支撑位（元）",
+        "resistance_price": "第一压力位（元）",
+        "resistance2_price": "第二压力位（元）",
+        "stop_loss": "止损位（元）",
+        "factors": "各因子得分与描述（JSON）",
+        "weights": "预测所用因子权重（JSON）",
+        "trend": "明日走势主预测形态（放量大涨/冲高回落/平开高走/日内震荡/低开低走/放量大跌）",
+        "trend_probs": "六种走势形态概率（JSON）",
+        "trend_strategy": "明日操作策略（成交量/MACD场景建议）",
+        "actual_trend": "复盘：次日实际走势形态",
+        "trend_hit": "复盘：走势预测是否命中（预测形态=实际形态）",
+        "review_date": "复盘日（基于日期后的首个实际交易日）",
+        "actual_close": "复盘日收盘价（元）",
+        "actual_pct": "复盘日涨跌幅（相对预测时收盘价，%）",
+        "hit": "是否命中（true=方向正确/false=方向错误/null=观望中性）",
+        "reviewed_at": "复盘时间",
+        "created_at": "记录创建时间",
+        "updated_at": "记录更新时间",
     },
     "backtest.results": {
         "id": "主键",
@@ -298,6 +330,55 @@ def main():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_concept_concept ON market_data.stock_concept(concept_id)")
         print("表 market_data.stock_concept 就绪")
+
+        # market_data.predictions - 买卖点预测记录表（含次日复盘结果）
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_data.predictions (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                name VARCHAR(50),
+                based_date DATE NOT NULL,
+                predict_date DATE NOT NULL,
+                action VARCHAR(20) NOT NULL,
+                action_code VARCHAR(20) NOT NULL,
+                score NUMERIC(12,4),
+                prob_up NUMERIC(12,4),
+                close NUMERIC(12,4),
+                support_price NUMERIC(12,4),
+                support2_price NUMERIC(12,4),
+                resistance_price NUMERIC(12,4),
+                resistance2_price NUMERIC(12,4),
+                stop_loss NUMERIC(12,4),
+                factors JSONB,
+                weights JSONB,
+                trend VARCHAR(20),
+                trend_probs JSONB,
+                trend_strategy TEXT,
+                actual_trend VARCHAR(20),
+                trend_hit BOOLEAN,
+                review_date DATE,
+                actual_close NUMERIC(12,4),
+                actual_pct NUMERIC(12,4),
+                hit BOOLEAN,
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, based_date)
+            )
+        """)
+        # 兼容旧表：补充走势预测相关列
+        for col, col_def in [("trend", "VARCHAR(20)"),
+                              ("trend_probs", "JSONB"),
+                              ("trend_strategy", "TEXT"),
+                              ("actual_trend", "VARCHAR(20)"),
+                              ("trend_hit", "BOOLEAN")]:
+            try:
+                cur.execute(f"ALTER TABLE market_data.predictions ADD COLUMN IF NOT EXISTS {col} {col_def}")
+            except Exception:
+                pass
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_based_date ON market_data.predictions(based_date DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_symbol ON market_data.predictions(symbol)")
+        print("表 market_data.predictions 创建成功")
 
         # backtest.results - 回测结果表
         cur.execute("""

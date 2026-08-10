@@ -195,8 +195,23 @@ function strategySummary(params) {
   const sp = p.sp || {};
   const macd = p.macd || {};
   const vp = sp.volParams || {};
+  const st = p.strategy || '';
+  // 量能类策略：与回测页一致，展示量能信号参数而非 MACD
+  const VOL_TYPES = ['volBreakout', 'volPullback', 'volRatio', 'obv', 'vwap', 'volShrink', 'volDivergence', 'vr'];
+  const isVol = VOL_TYPES.includes(st);
   const parts = [];
-  if (macd.fast) parts.push(`MACD(${macd.fast},${macd.slow},${macd.signal})`);
+  if (macd.fast && !isVol) parts.push(`MACD(${macd.fast},${macd.slow},${macd.signal})`);
+  // 策略类型特有的信号参数
+  const sig = {
+    volBreakout: vp.volBreakN ? `突破前${vp.volBreakN}日高/量≥${vp.volMult}倍${vp.volN}日均量` : '',
+    volPullback: vp.volTrendN ? `趋势MA${vp.volTrendN}/缩量≤${vp.shrinkMult}倍${vp.volN}日均量` : '',
+    volRatio: vp.volRatioBuy ? `量比≥${vp.volRatioBuy}` : '',
+    obv: vp.volBreakN ? `OBV创${vp.volBreakN}日新高` : '',
+    volShrink: vp.shrinkMult ? `地量≤${vp.shrinkMult}倍${vp.volN}日均量且收阳` : '',
+    volDivergence: vp.volBreakN ? `背离窗口${vp.volBreakN}日` : '',
+    vr: vp.vrN ? `VR(${vp.vrN},${vp.vrBuyThr},${vp.vrSellThr})` : ''
+  };
+  if (sig[st]) parts.push(sig[st]);
   if (sp.positionRatio) parts.push(`仓位${(sp.positionRatio * 100).toFixed(0)}%`);
   if (sp.takeProfit) parts.push(`止盈${sp.takeProfit}%`);
   if (sp.stopLoss) parts.push(`止损${sp.stopLoss}%`);
@@ -206,8 +221,8 @@ function strategySummary(params) {
   if (sp.ma5Sell && sp.ma5Sell.enabled) filters.push('MA5');
   if (sp.buyStrength && sp.buyStrength.enabled) filters.push('强度');
   if (sp.trendFilter && sp.trendFilter.enabled) filters.push('趋势');
+  if (sp.bullBuy) filters.push('多头补买');
   if (filters.length) parts.push(`过滤:${filters.join('/')}`);
-  if (vp.volN) parts.push(`量能N${vp.volN}/倍${vp.volMult}`);
   return parts.join(' | ') || '默认';
 }
 
@@ -381,7 +396,7 @@ function fillExampleParams() {
       maxAdds: 2,
       takeProfit: 5,
       partialRatio: 0.5,
-      stopLoss: 3,
+      stopLoss: 5,
       enableT1: false,
       feeCfg: { commissionRate: 2.5, commissionMin: 5, stampTax: 0.5, transferFee: 0.1 },
       flatFilter: { enabled: false, window: 10, threshold: 3 },
@@ -390,6 +405,7 @@ function fillExampleParams() {
       aboveWaterOnly: false,
       buyStrength: { enabled: false, threshold: 0.02 },
       trendFilter: { enabled: false, mode: 'both' },
+      bullBuy: true,
       volParams: { volN: 5, volBreakN: 20, volMult: 1.5, shrinkMult: 0.5, volTrendN: 20, volRatioBuy: 2, vrN: 26, vrBuyThr: 70, vrSellThr: 150 }
     }
   };

@@ -1,0 +1,1960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>买卖点预测</title>
+<link rel="stylesheet" href="stock-picker.css">
+  <style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .field { flex: 1; min-width: 140px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+  input, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #1a73e8; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+
+  /* 因子权重 */
+  .weight-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 20px; }
+  .weight-item { display: flex; align-items: center; gap: 10px; }
+  .weight-item .name { flex: 0 0 64px; font-size: 13px; color: #555; white-space: nowrap; }
+  .weight-item input[type=range] { flex: 1; min-width: 60px; }
+  .weight-item .val { flex: 0 0 30px; font-size: 12px; color: #1a73e8; font-family: Consolas, monospace; text-align: right; }
+
+  /* 结论卡片 */
+  .verdict { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+  .verdict-badge {
+    flex: 0 0 200px; border-radius: 8px; padding: 16px; color: #fff;
+    display: flex; flex-direction: column; justify-content: center; text-align: center;
+  }
+  .verdict-badge .action { font-size: 22px; font-weight: 700; white-space: nowrap; }
+  .verdict-badge .sub { font-size: 12px; opacity: 0.9; margin-top: 4px; }
+  .verdict-score { flex: 1; min-width: 220px; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+  .score-line { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .score-line .lab { flex: 0 0 110px; color: #666; white-space: nowrap; }
+  .score-line .bar { flex: 1; height: 14px; background: #f0f0f0; border-radius: 7px; overflow: hidden; display: flex; }
+  .score-line .bar .up { background: #e8453c; height: 100%; }
+  .score-line .bar .down { background: #34a853; height: 100%; }
+  .score-line .value { flex: 0 0 56px; text-align: right; font-family: Consolas, monospace; font-weight: 600; font-size: 14px; }
+  .up { color: #e8453c; }
+  .down { color: #34a853; }
+  .score-summary { font-size: 12px; color: #888; }
+
+  /* 买卖时机 */
+  .timing { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .timing-card { border-radius: 6px; padding: 12px 14px; border: 1px solid #eee; }
+  .timing-card.buy { background: #fdf2f1; border-left: 3px solid #e8453c; }
+  .timing-card.sell { background: #eef7ef; border-left: 3px solid #34a853; }
+  .timing-card h3 { font-size: 13px; margin-bottom: 8px; }
+  .timing-card.buy h3 { color: #e8453c; }
+  .timing-card.sell h3 { color: #34a853; }
+  .timing-card .tm { font-size: 13px; padding: 3px 0; display: flex; justify-content: space-between; gap: 10px; }
+  .timing-card .tm .k { color: #888; white-space: nowrap; }
+  .timing-card .tm .v { font-family: Consolas, monospace; font-weight: 600; text-align: right; }
+  .timing-card .advice { font-size: 12px; color: #666; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ddd; }
+
+  /* 因子明细 */
+  .factor-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .factor-row .fname { flex: 0 0 72px; font-size: 13px; color: #555; white-space: nowrap; }
+  .factor-row .fbar { flex: 1; height: 10px; background: #f0f0f0; border-radius: 5px; position: relative; }
+  .factor-row .fbar .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: #ccc; }
+  .factor-row .fbar .fill { position: absolute; top: 0; height: 100%; border-radius: 5px; }
+  .factor-row .fscore { flex: 0 0 52px; text-align: right; font-family: Consolas, monospace; font-size: 13px; font-weight: 600; }
+  .factor-row .fdesc { flex: 1 1 100%; font-size: 12px; color: #888; padding-left: 82px; }
+
+  /* 信号图 */
+  .chart-wrap { margin-top: 16px; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #eee; }
+  .chart-wrap h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .chart-canvas-wrap { position: relative; height: 380px; }
+  .legend { display: flex; gap: 16px; margin-bottom: 8px; font-size: 12px; color: #666; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .legend-color { width: 14px; height: 3px; border-radius: 1px; }
+
+  /* 历史信号 */
+  .stats { display: flex; gap: 20px; margin: 8px 0; flex-wrap: wrap; }
+  .stat-item { font-size: 13px; }
+  .stat-item .k { color: #888; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid #eee; font-family: Consolas, monospace; }
+  th { background: #f8f9fa; color: #666; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .tag { display: inline-block; font-size: 11px; border-radius: 3px; padding: 1px 8px; }
+  .tag.buy { background: #fdecea; color: #e8453c; }
+  .tag.sell { background: #e8f5e9; color: #34a853; }
+  .tag.hold { background: #f3f4f6; color: #666; }
+
+  /* 预测落库与复盘 */
+  .save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .save-row .hint { margin: 0; }
+  #saveStatus.ok { color: #34a853; }
+  #saveStatus.err { color: #e8453c; }
+  .stat-chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 0; }
+  .chip { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 8px 14px; font-size: 13px; }
+  .chip .k { color: #888; display: block; font-size: 11px; white-space: nowrap; }
+  .chip .v { font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .chip .v.up { color: #e8453c; }
+  .chip .v.down { color: #34a853; }
+  .sugg-box { background: #fdf8ec; border: 1px solid #f3e6c5; border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #7a5b16; margin-top: 10px; }
+  .factor-note { font-size: 12px; color: #888; margin-top: 6px; }
+
+  /* 明日走势形态预测 */
+  .trend-head { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .trend-badge { flex: 0 0 170px; border-radius: 8px; padding: 14px; color: #fff; text-align: center; }
+  .trend-badge .t-name { font-size: 20px; font-weight: 700; white-space: nowrap; }
+  .trend-badge .t-prob { font-size: 12px; opacity: 0.92; margin-top: 4px; white-space: nowrap; }
+  .trend-reasons { flex: 1; min-width: 260px; }
+  .trend-reasons .t-sub { font-size: 13px; color: #555; margin-bottom: 6px; }
+  .trend-reasons .t-why { font-size: 12px; color: #888; line-height: 1.8; }
+  .trend-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; margin-top: 6px; }
+  .tbar { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .tbar .tk { flex: 0 0 76px; color: #555; white-space: nowrap; }
+  .tbar .tb { flex: 1; height: 12px; background: #f0f0f0; border-radius: 6px; overflow: hidden; }
+  .tbar .tb .fill { height: 100%; border-radius: 6px; }
+  .tbar .tv { flex: 0 0 44px; text-align: right; font-family: Consolas, monospace; font-weight: 600; font-size: 13px; }
+
+  /* 明日操作策略 */
+  .strat-scene { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .scene-chip { font-size: 13px; color: #555; background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 6px 12px; white-space: nowrap; }
+  .strat-title { font-size: 13px; color: #666; margin: 10px 0 6px; padding-left: 8px; border-left: 2px solid #1a73e8; }
+  .strat-list { margin: 0; padding-left: 20px; }
+  .strat-list li { font-size: 13px; color: #555; margin: 4px 0; line-height: 1.7; }
+  .strat-list li strong { color: #1a73e8; white-space: nowrap; }
+
+  @media (max-width: 800px) {
+    .timing { grid-template-columns: 1fr; }
+    .trend-bars { grid-template-columns: 1fr; }
+  }
+  </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
+<script src="stock-picker.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <h1>买卖点预测</h1>
+    <a class="back" href="index.html">← 返回入口</a>
+  </div>
+
+  <!-- 股票与数据范围 -->
+  <div class="panel">
+    <h2>股票与数据范围</h2>
+    <div class="row">
+      <div class="field" style="flex:0 0 320px;">
+        <label>股票（可输入筛选 / 下拉选择）</label>
+        <div id="stockPicker"></div>
+      </div>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
+        <button id="fetchBtn" onclick="fetchStock(false)">读取2年数据</button>
+        <button class="secondary" onclick="fetchStock(true)">同步最新数据</button>
+      </div>
+    </div>
+
+    <!-- 数据范围模式切换 -->
+    <div class="row" style="align-items:center; margin-top:4px;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="recent" checked onchange="onRangeModeChange()"> 最近
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="all" onchange="onRangeModeChange()"> 自上市以后
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最近模式：数量 + 单位 -->
+    <div id="recentModeRow" class="row">
+      <div class="field" style="flex:0 0 120px;">
+        <label>数量</label>
+        <input type="number" id="rangeCount" value="2" min="1" oninput="updateRangeUI()">
+      </div>
+      <div class="field" style="flex:0 0 120px;">
+        <label>单位</label>
+        <select id="rangeUnit" onchange="updateRangeUI()">
+          <option value="day">天</option>
+          <option value="month">月</option>
+          <option value="quarter">季度</option>
+          <option value="year" selected>年</option>
+        </select>
+      </div>
+      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px;">≈ 500 个交易日</div>
+    </div>
+
+    <!-- 时间段模式：起止日期 -->
+    <div id="periodModeRow" class="row" style="display:none;">
+      <div class="field" style="flex:0 0 200px;">
+        <label>起始日期</label>
+        <input type="date" id="begDate">
+      </div>
+      <div class="field" style="flex:0 0 200px;">
+        <label>结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+    </div>
+
+    <div id="stockInfo" class="hint">正在加载库内股票列表...</div>
+  </div>
+
+  <!-- 因子权重 -->
+  <div class="panel">
+    <h2>因子权重设置（正分利多，负分利空）</h2>
+    <div class="weight-grid" id="weightGrid"></div>
+    <div class="actions" style="display:flex; gap:8px; margin-top:12px;">
+      <button class="secondary" onclick="resetWeights()">恢复默认</button>
+      <button class="secondary" onclick="applyWeights()">按当前权重重新预测</button>
+    </div>
+  </div>
+
+  <!-- 预测结果 -->
+  <div id="resultArea"></div>
+
+  <!-- 预测落库与复盘 -->
+  <div class="panel">
+    <h2>预测落库与复盘</h2>
+    <div class="save-row">
+      <button id="savePredBtn" onclick="savePrediction()" disabled>保存当前预测结论</button>
+      <span id="saveStatus" class="hint">先运行预测，再保存结论落库；次日打开本页自动复盘</span>
+    </div>
+    <div class="hint" style="margin-top:6px;">同一股票同一依据日重复保存会覆盖更新。命中判定：买入类信号次日上涨=命中，卖出类信号次日下跌=命中，观望只记录涨跌不计命中；走势命中：次日实际走势形态与预测形态一致=命中。</div>
+    <div id="predStats"></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:8px;">
+      <h3 style="font-size:14px; color:#444;">预测记录</h3>
+      <div style="display:flex; gap:8px;">
+        <select id="predSymbol" onchange="loadPredictions()" style="width:auto; min-width:160px;">
+          <option value="">全部股票</option>
+        </select>
+        <button class="secondary" onclick="loadPredictions();loadPredStats()">刷新复盘</button>
+      </div>
+    </div>
+    <div id="predListWrap"></div>
+  </div>
+</div>
+
+<script>
+// ============ 基础工具 ============
+const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
+  ? 'http://127.0.0.1:8000' : '';
+
+const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
+const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
+
+function v(x) { return (x === null || x === undefined || x === '' || isNaN(x)) ? null : Number(x); }
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+function fmtNum(x, d = 2) { return (x == null) ? '-' : Number(x).toFixed(d); }
+function fmtWan(x) {
+  x = Number(x);
+  const a = Math.abs(x);
+  if (a >= 1e8) return (x / 1e8).toFixed(2) + '亿';
+  if (a >= 1e4) return (x / 1e4).toFixed(0) + '万';
+  return x.toFixed(0);
+}
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function getNextTradingDay(d) {
+  const next = new Date(d);
+  next.setDate(next.getDate() + 1);
+  while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+  return next;
+}
+function showError(msg) { showErrorModal(msg); }
+function clearError() { document.getElementById('errorMsg') && (document.getElementById('errorMsg').style.display = 'none'); }
+
+// 股票目录加载
+async function loadStockCatalog() {
+  const infoEl = document.getElementById('stockInfo');
+  try {
+    const res = await fetch(`${API_BASE}/api/stock_catalog`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const stocks = data.data || [];
+    const picker = document.getElementById('stockPicker');
+    StockPicker.init(picker, stocks);
+    if (stocks.length === 0) infoEl.textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
+  } catch (e) {
+    const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
+      ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）' : '';
+    showError('加载股票目录失败: ' + e.message + hint);
+    infoEl.textContent = '';
+  }
+}
+
+// ============ 数据范围（与 macd.html 约定一致） ============
+function getRangeMode() {
+  const el = document.querySelector('input[name="rangeMode"]:checked');
+  return el ? el.value : 'recent';
+}
+function onRangeModeChange() {
+  const mode = getRangeMode();
+  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
+  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
+  updateRangeUI();
+}
+function estimateTradingDays() {
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  return Math.max(count * (UNIT_TRADING_DAYS[unit] || 1), 120);
+}
+function updateRangeUI() {
+  const mode = getRangeMode();
+  const btn = document.getElementById('fetchBtn');
+  const hint = document.getElementById('stockInfo');
+  if (mode === 'all') {
+    btn.textContent = '读取全部数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取自上市以来的全部日K（如需最新行情请点「同步最新数据」）';
+    return;
+  }
+  if (mode === 'recent') {
+    const count = parseInt(document.getElementById('rangeCount').value) || 0;
+    const unit = document.getElementById('rangeUnit').value;
+    const days = estimateTradingDays();
+    btn.textContent = `读取 ${count} ${UNIT_LABEL[unit]} 数据`;
+    document.getElementById('recentHint').textContent = `≈ ${days} 个交易日`;
+    hint.textContent = `输入6位代码或名称，从本地库读取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日K与全部指标`;
+  } else {
+    btn.textContent = '读取时间段数据';
+    hint.textContent = '输入6位代码或名称，从本地库读取指定起止日期内的日K与指标';
+  }
+}
+function dateToYYYYMMDD(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+function buildRangeParams() {
+  const mode = getRangeMode();
+  if (mode === 'all') return { beg: '19900101', end: dateToYYYYMMDD(new Date()), lmt: 20000 };
+  if (mode === 'period') {
+    const b = document.getElementById('begDate').value;
+    const e = document.getElementById('endDate').value;
+    if (!b || !e) throw new Error('请选择起止日期');
+    if (b.replace(/-/g, '') > e.replace(/-/g, '')) throw new Error('起始日期不能晚于结束日期');
+    return { beg: b.replace(/-/g, ''), end: e.replace(/-/g, ''), lmt: 20000 };
+  }
+  const tradingDays = estimateTradingDays();
+  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+  const bd = new Date();
+  bd.setDate(bd.getDate() - naturalDays);
+  return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()), lmt: tradingDays };
+}
+
+// ============ 12大因子评分（-100 ~ +100，正利多负利空） ============
+
+// 1. 主力成交情况：主力净流入占成交额比例 + 近3日累计 + 趋势
+function factorMainCap(rows, i) {
+  const r = rows[i];
+  const inflow = v(r.main_net_inflow), amount = v(r.amount);
+  if (inflow == null || amount == null || amount <= 0) {
+    return { score: 0, desc: ['主力资金流数据缺失（仅近期交易日有），不计分'] };
+  }
+  let score = 0;
+  const desc = [];
+  const pct = inflow / amount * 100;
+  score += clamp(pct / 5, -1, 1) * 50;
+  desc.push(`今日主力净流入 ${fmtWan(inflow)}，占成交额 ${pct.toFixed(2)}%`);
+  let sumIn = 0, sumAmt = 0;
+  for (let j = Math.max(0, i - 2); j <= i; j++) {
+    const ri = rows[j];
+    const fi = v(ri.main_net_inflow), ai = v(ri.amount);
+    if (fi != null && ai != null) { sumIn += fi; sumAmt += ai; }
+  }
+  if (sumAmt > 0) {
+    const cum = sumIn / sumAmt * 100;
+    score += clamp(cum / 5, -1, 1) * 35;
+    desc.push(`近3日主力净流入占成交额 ${cum.toFixed(2)}%`);
+  }
+  if (i >= 1) {
+    const pr = rows[i - 1];
+    const pIn = v(pr.main_net_inflow), pAmt = v(pr.amount);
+    if (pIn != null && pAmt != null && pAmt > 0) {
+      const pPct = pIn / pAmt * 100;
+      if (pct > pPct) { score += 15; desc.push('主力净流入占比较上日放大'); }
+      else { score -= 15; desc.push('主力净流入占比较上日缩小'); }
+    }
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 2. 成交量：量能趋势（近5日均量 vs 近20日均量）× 涨跌方向
+function factorVolume(rows, i) {
+  const r = rows[i];
+  const vol = v(r.volume);
+  let pct = v(r.pct_change);
+  if (vol == null || vol <= 0) return { score: 0, desc: ['成交量数据缺失，不计分'] };
+  if (pct == null) pct = 0;
+  // 近5日/近20日均量（含当日）
+  let s5 = 0, n5 = 0, s20 = 0, n20 = 0;
+  for (let j = Math.max(0, i - 4); j <= i; j++) { const x = v(rows[j].volume); if (x != null && x > 0) { s5 += x; n5++; } }
+  for (let j = Math.max(0, i - 19); j <= i; j++) { const x = v(rows[j].volume); if (x != null && x > 0) { s20 += x; n20++; } }
+  if (n5 === 0 || n20 === 0) return { score: 0, desc: ['成交量前置不足，不计分'] };
+  const avg5 = s5 / n5, avg20 = s20 / n20;
+  const ratio = avg5 / avg20; // >1 放量趋势，<1 缩量趋势
+  let score = 0;
+  const desc = [];
+  desc.push(`近5日均量/近20日均量=${ratio.toFixed(2)}`);
+  const trend = ratio >= 1.2 ? '明显放量' : ratio >= 1.05 ? '温和放量' : ratio <= 0.8 ? '明显缩量' : ratio <= 0.95 ? '温和缩量' : '量能平稳';
+  if (pct > 0) {
+    if (ratio >= 1.2) { score += 60; desc.push(`放量上涨（${trend}），资金持续参与`); }
+    else if (ratio >= 1.05) { score += 30; desc.push(`温和放量上涨（${trend}）`); }
+    else if (ratio <= 0.8) { score -= 40; desc.push(`缩量上涨（${trend}），上攻动能不足`); }
+    else { score -= 10; desc.push(`量能平稳上涨（${trend}）`); }
+  } else if (pct < 0) {
+    if (ratio >= 1.2) { score -= 60; desc.push(`放量下跌（${trend}），抛压沉重`); }
+    else if (ratio >= 1.05) { score -= 30; desc.push(`温和放量下跌（${trend}）`); }
+    else if (ratio <= 0.8) { score += 40; desc.push(`缩量下跌（${trend}），卖压衰竭`); }
+    else { score -= 10; desc.push(`量能平稳下跌（${trend}）`); }
+  } else {
+    desc.push(`平盘（${trend}），方向不明`);
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 3. 换手率：活跃度（过高过热、过低不活跃；温和活跃配合方向）
+function factorTurnover(rows, i) {
+  const r = rows[i];
+  const to = v(r.turnover);
+  let pct = v(r.pct_change);
+  if (to == null) return { score: 0, desc: ['换手率数据缺失，不计分'] };
+  if (pct == null) pct = 0;
+  let score = 0;
+  const desc = [];
+  const up = pct > 0;
+  if (to > 20) { score -= 45; desc.push(`换手率${to.toFixed(1)}% 过热（短线分歧极大，警惕见顶）`); }
+  else if (to > 15) { score -= 30; desc.push(`换手率${to.toFixed(1)}% 高度活跃（${up ? '上涨' : '下跌'}，注意风险）`); }
+  else if (to > 10) { score += up ? 25 : -25; desc.push(`换手率${to.toFixed(1)}% 高度活跃`); }
+  else if (to > 5) { score += 40; desc.push(`换手率${to.toFixed(1)}% 活跃（短线人气佳）`); }
+  else if (to > 3) { score += 25; desc.push(`换手率${to.toFixed(1)}% 温和活跃`); }
+  else if (to > 1) { score += 5; desc.push(`换手率${to.toFixed(1)}% 交投一般`); }
+  else { score -= 20; desc.push(`换手率${to.toFixed(1)}% 过于清淡（流动性差）`); }
+  if (up && to >= 3 && to <= 10) { score += 10; desc.push('放量上涨+换手活跃，资金进场'); }
+  if (!up && to >= 10) { score -= 15; desc.push('高换手下跌，警惕出货'); }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 4. 量比：当日放量程度 × 涨跌方向（放量上涨抢筹、放量下跌抛压、缩量下跌衰竭）
+function factorVolRatio(rows, i) {
+  const r = rows[i];
+  const vr = v(r.volume_ratio);
+  let pct = v(r.pct_change);
+  if (vr == null) return { score: 0, desc: ['量比数据缺失，不计分'] };
+  if (pct == null) pct = 0;
+  let score = 0;
+  const desc = [];
+  const tag = `量比${vr.toFixed(2)} ${pct >= 0 ? '上涨' : '下跌'}${Math.abs(pct).toFixed(2)}%`;
+  if (pct > 0) {
+    if (vr >= 2.5) { score += 70; desc.push(`放量上涨（${tag}），资金抢筹`); }
+    else if (vr >= 1.5) { score += 45; desc.push(`明显放量上涨（${tag}）`); }
+    else if (vr >= 1.0) { score += 20; desc.push(`温和放量上涨（${tag}）`); }
+    else { score -= 20; desc.push(`缩量上涨（${tag}），上攻动能不足`); }
+  } else if (pct < 0) {
+    if (vr >= 2.5) { score -= 70; desc.push(`放量下跌（${tag}），抛压沉重`); }
+    else if (vr >= 1.5) { score -= 45; desc.push(`明显放量下跌（${tag}）`); }
+    else if (vr >= 1.0) { score -= 20; desc.push(`温和放量下跌（${tag}）`); }
+    else { score += 25; desc.push(`缩量下跌（${tag}），卖压趋缓`); }
+  } else {
+    if (vr >= 1.5) { score += 10; desc.push(`平盘放量（${tag}），多空分歧加大`); }
+    else desc.push(`平盘缩量（${tag}），方向不明`);
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 5. RSI：超买超卖 + 金叉死叉 + 趋势
+function factorRSI(rows, i) {
+  const r = rows[i];
+  const r6 = v(r.rsi6), r14 = v(r.rsi14);
+  if (r6 == null) return { score: 0, desc: ['RSI数据缺失，不计分'] };
+  let score = 0;
+  const desc = [];
+  if (r6 <= 20) { score += 60; desc.push(`RSI6=${r6.toFixed(1)} 深度超卖`); }
+  else if (r6 <= 30) { score += 40; desc.push(`RSI6=${r6.toFixed(1)} 超卖区`); }
+  else if (r6 <= 40) { score += 15; desc.push(`RSI6=${r6.toFixed(1)} 偏弱`); }
+  else if (r6 >= 80) { score -= 60; desc.push(`RSI6=${r6.toFixed(1)} 深度超买`); }
+  else if (r6 >= 70) { score -= 40; desc.push(`RSI6=${r6.toFixed(1)} 超买区`); }
+  else if (r6 >= 60) { score -= 15; desc.push(`RSI6=${r6.toFixed(1)} 偏强`); }
+  else desc.push(`RSI6=${r6.toFixed(1)} 中性`);
+  if (i >= 1 && r14 != null) {
+    const p6 = v(rows[i - 1].rsi6), p14 = v(rows[i - 1].rsi14);
+    if (p6 != null && p14 != null) {
+      if (p6 < p14 && r6 >= r14) { score += 25; desc.push('RSI6上穿RSI14 金叉'); }
+      else if (p6 > p14 && r6 <= r14) { score -= 25; desc.push('RSI6下穿RSI14 死叉'); }
+    }
+    if (p6 != null) {
+      if (r6 > p6) { score += 8; desc.push('RSI6上行'); }
+      else if (r6 < p6) { score -= 8; desc.push('RSI6下行'); }
+    }
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 6. KDJ：超买超卖 + 金叉死叉 + J值极值
+function factorKDJ(rows, i) {
+  const r = rows[i];
+  const k = v(r.kdj_k), d = v(r.kdj_d), j = v(r.kdj_j);
+  if (k == null || d == null) return { score: 0, desc: ['KDJ数据缺失，不计分'] };
+  let score = 0;
+  const desc = [];
+  if (k <= 20) { score += 50; desc.push(`K=${k.toFixed(1)} 超卖`); }
+  else if (k >= 80) { score -= 50; desc.push(`K=${k.toFixed(1)} 超买`); }
+  else if (k <= 30) { score += 25; desc.push(`K=${k.toFixed(1)} 低位`); }
+  else if (k >= 70) { score -= 25; desc.push(`K=${k.toFixed(1)} 高位`); }
+  else desc.push(`K=${k.toFixed(1)} 中性`);
+  if (j != null) {
+    if (j <= 0) { score += 30; desc.push(`J=${j.toFixed(1)} 触底`); }
+    else if (j >= 100) { score -= 30; desc.push(`J=${j.toFixed(1)} 超买极值`); }
+  }
+  if (i >= 1) {
+    const pk = v(rows[i - 1].kdj_k), pd = v(rows[i - 1].kdj_d);
+    if (pk != null && pd != null) {
+      if (pk < pd && k >= d) { score += 30; desc.push('K上穿D 金叉'); }
+      else if (pk > pd && k <= d) { score -= 30; desc.push('K下穿D 死叉'); }
+    }
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 7. 乖离率：负乖离超跌利多，正乖离超买利空
+function factorBias(rows, i) {
+  const r = rows[i];
+  const b5 = v(r.bias5), b10 = v(r.bias10), b20 = v(r.bias20);
+  if (b5 == null && b10 == null && b20 == null) return { score: 0, desc: ['乖离率数据缺失，不计分'] };
+  let score = 0;
+  const desc = [];
+  if (b5 != null) {
+    if (b5 <= -5) { score += 50; desc.push(`BIAS5=${b5.toFixed(2)}% 深度负乖离(超跌)`); }
+    else if (b5 <= -3) { score += 30; desc.push(`BIAS5=${b5.toFixed(2)}% 负乖离(超跌)`); }
+    else if (b5 >= 6) { score -= 50; desc.push(`BIAS5=${b5.toFixed(2)}% 深度正乖离(超买)`); }
+    else if (b5 >= 4) { score -= 30; desc.push(`BIAS5=${b5.toFixed(2)}% 正乖离(超买)`); }
+  }
+  if (b10 != null) {
+    if (b10 <= -8) { score += 35; desc.push(`BIAS10=${b10.toFixed(2)}% 深度负乖离`); }
+    else if (b10 <= -5) { score += 20; desc.push(`BIAS10=${b10.toFixed(2)}% 负乖离`); }
+    else if (b10 >= 12) { score -= 35; desc.push(`BIAS10=${b10.toFixed(2)}% 深度正乖离`); }
+    else if (b10 >= 8) { score -= 20; desc.push(`BIAS10=${b10.toFixed(2)}% 正乖离`); }
+  }
+  if (b20 != null) {
+    if (b20 <= -12) { score += 25; desc.push(`BIAS20=${b20.toFixed(2)}% 深度负乖离`); }
+    else if (b20 >= 16) { score -= 25; desc.push(`BIAS20=${b20.toFixed(2)}% 深度正乖离`); }
+  }
+  if (!desc.length) desc.push(`乖离率中性（BIAS5=${b5 != null ? b5.toFixed(2) : '-'}%）`);
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 8. MACD：金叉状态 + 红绿柱 + 变化速率（MACD变大买/变小卖）
+function factorMacd(rows, i) {
+  const r = rows[i];
+  const dif = v(r.macd_dif), dea = v(r.macd_dea), hist = v(r.macd_hist);
+  if (dif == null || dea == null || hist == null) return { score: 0, desc: ['MACD数据缺失，不计分'] };
+  let score = 0;
+  const desc = [];
+  if (dif >= dea) { score += 25; desc.push('DIF在DEA上方(多头)'); }
+  else { score -= 25; desc.push('DIF在DEA下方(空头)'); }
+  if (hist > 0) { score += 20; desc.push('MACD红柱'); }
+  else if (hist < 0) { score -= 20; desc.push('MACD绿柱'); }
+  else desc.push('MACD柱归零');
+  if (i >= 1) {
+    const ph = v(rows[i - 1].macd_hist);
+    if (ph != null) {
+      if (hist > ph) { score += 30; desc.push(`MACD变大(+${(hist - ph).toFixed(4)})，动能增强`); }
+      else if (hist < ph) { score -= 30; desc.push(`MACD变小(${(hist - ph).toFixed(4)})，动能减弱`); }
+    }
+    const pdif = v(rows[i - 1].macd_dif), pdea = v(rows[i - 1].macd_dea);
+    if (pdif != null && pdea != null) {
+      if (pdif < pdea && dif >= dea) { score += 25; desc.push('MACD金叉'); }
+      else if (pdif > pdea && dif <= dea) { score -= 25; desc.push('MACD死叉'); }
+    }
+  }
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 10. K线形状：长阳长阴 + 影线 + 20日区间位置 + 连阳连阴
+function factorCandle(rows, i) {
+  if (i < 1) return { score: 0, desc: ['K线前置不足，不计分'] };
+  const r = rows[i], pr = rows[i - 1];
+  const prevClose = v(pr.close);
+  const open = v(r.open), close = v(r.close), high = v(r.high), low = v(r.low);
+  if (prevClose == null || open == null || close == null || high == null || low == null) {
+    return { score: 0, desc: ['K线数据缺失，不计分'] };
+  }
+  let score = 0;
+  const desc = [];
+  const bodyPct = (close - open) / prevClose * 100;
+  const rangePct = (high - low) / prevClose * 100;
+  if (bodyPct >= 3) { score += 40; desc.push(`长阳线(${bodyPct.toFixed(2)}%)`); }
+  else if (bodyPct <= -3) { score -= 40; desc.push(`长阴线(${bodyPct.toFixed(2)}%)`); }
+  else if (Math.abs(bodyPct) < 0.5 && rangePct >= 3) desc.push('十字星(多空犹豫)');
+  const range = high - low;
+  if (range > 0) {
+    const upper = high - Math.max(open, close);
+    const lower = Math.min(open, close) - low;
+    if (upper / range >= 0.6) { score -= 25; desc.push('长上影线(上方抛压)'); }
+    if (lower / range >= 0.6) { score += 25; desc.push('长下影线(下方支撑)'); }
+  }
+  const start = Math.max(0, i - 19);
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let j = start; j <= i; j++) {
+    const h = v(rows[j].high), l = v(rows[j].low);
+    if (h != null) hi20 = Math.max(hi20, h);
+    if (l != null) lo20 = Math.min(lo20, l);
+  }
+  if (isFinite(hi20) && isFinite(lo20) && hi20 > lo20) {
+    const pos = (close - lo20) / (hi20 - lo20);
+    if (pos >= 0.9) { score -= 20; desc.push('收盘处于20日高位'); }
+    else if (pos <= 0.1) { score += 20; desc.push('收盘处于20日低位'); }
+  }
+  let up = v(r.pct_change) >= 0, streak = 1;
+  for (let j = i - 1; j >= 0; j--) {
+    const pc = v(rows[j].pct_change);
+    if (pc == null) break;
+    if ((pc >= 0) === up) streak++; else break;
+  }
+  if (up && streak >= 3) { score += 15; desc.push(`连阳${streak}日(强势延续)`); }
+  else if (!up && streak >= 3) { score -= 15; desc.push(`连阴${streak}日(弱势延续)`); }
+  if (!desc.length) desc.push('K线形态中性');
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 9. 均线系统 MA5/MA10/MA20/MA30：排列 + 站上跌破 + 金叉死叉 + 趋势
+function factorMA(rows, i) {
+  const r = rows[i];
+  const close = v(r.close);
+  const ma5 = v(r.ma5), ma10 = v(r.ma10), ma20 = v(r.ma20), ma30 = v(r.ma30);
+  if (close == null || ma5 == null || ma10 == null || ma20 == null || ma30 == null) {
+    return { score: 0, desc: ['均线数据缺失（需30日以上数据），不计分'] };
+  }
+  let score = 0;
+  const desc = [];
+  const arr = [ma5, ma10, ma20, ma30];
+  const sorted = [...arr].sort((a, b) => b - a);
+  const isBull = arr.every((v2, k) => v2 === sorted[k]); // MA5>MA10>MA20>MA30
+  const isBear = arr.every((v2, k) => v2 === sorted[3 - k]);
+  if (isBull) { score += 40; desc.push('均线多头排列(MA5>MA10>MA20>MA30)'); }
+  else if (isBear) { score -= 40; desc.push('均线空头排列(MA5<MA10<MA20<MA30)'); }
+  // 收盘价与各均线位置
+  const names = ['MA5', 'MA10', 'MA20', 'MA30'];
+  const vals = [ma5, ma10, ma20, ma30];
+  let above = 0;
+  vals.forEach((m, k) => { if (close > m) above++; });
+  desc.push(`收盘价站上${above}条均线`);
+  score += (above - 2) * 12; // 站上越多越利多
+  if (i >= 1) {
+    const p = rows[i - 1];
+    const p5 = v(p.ma5), p10 = v(p.ma10), p20 = v(p.ma20);
+    if (p5 != null && p10 != null) {
+      if (p5 < p10 && ma5 >= ma10) { score += 20; desc.push('MA5上穿MA10 金叉'); }
+      else if (p5 > p10 && ma5 <= ma10) { score -= 20; desc.push('MA5下穿MA10 死叉'); }
+    }
+    if (p5 != null && p20 != null) {
+      if (p5 < p20 && ma5 >= ma20) { score += 15; desc.push('MA5上穿MA20 金叉'); }
+      else if (p5 > p20 && ma5 <= ma20) { score -= 15; desc.push('MA5下穿MA20 死叉'); }
+    }
+    if (p5 != null) {
+      if (ma5 > p5) { score += 8; desc.push('MA5上行'); }
+      else if (ma5 < p5) { score -= 8; desc.push('MA5下行'); }
+    }
+  }
+  if (!desc.length) desc.push('均线系统中性');
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 11. 基本面：市值规模 + 上市年限（数据来自 stock_info）
+function factorFundamental(info) {
+  let score = 0;
+  const desc = [];
+  const cap = v(info.float_market_cap) || v(info.total_market_cap);
+  if (cap != null && cap > 0) {
+    const yi = cap; // 库内单位为"亿元"
+    if (yi >= 30 && yi <= 300) { score += 30; desc.push(`流通市值${yi.toFixed(0)}亿(活跃适中)`); }
+    else if (yi >= 10 && yi < 30) { score += 15; desc.push(`流通市值${yi.toFixed(0)}亿(小盘活跃)`); }
+    else if (yi > 300 && yi <= 1000) { score += 10; desc.push(`流通市值${yi.toFixed(0)}亿(中大盘)`); }
+    else if (yi > 1000) { score -= 20; desc.push(`流通市值${yi.toFixed(0)}亿(大盘权重,短线波动小)`); }
+    else if (yi < 10) { score -= 10; desc.push(`流通市值${yi.toFixed(0)}亿(微盘,风险高)`); }
+  } else desc.push('市值数据缺失，暂不计分');
+  if (info.list_date) {
+    const yrs = (new Date() - new Date(info.list_date)) / (365.25 * 24 * 3600 * 1000);
+    if (yrs < 1) { score += 15; desc.push('上市不足1年(次新股,波动大)'); }
+    else if (yrs < 5) { score += 8; desc.push(`上市${yrs.toFixed(0)}年(次新活跃)`); }
+    else desc.push(`上市${yrs.toFixed(0)}年(成熟)`);
+  } else desc.push('上市日期缺失');
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 12. OBV 能量潮：量价累积资金流向（顶/底背离 + 趋势 + 金叉死叉 + 近5日斜率）
+function factorOBV(rows, i) {
+  if (i < 20) return { score: 0, desc: ['OBV需20日以上数据，不计分'] };
+  // 前端累加计算 OBV 序列：收涨加量、收跌减量、平盘不变
+  const obv = [];
+  let val = 0;
+  for (let j = 0; j <= i; j++) {
+    const c = v(rows[j].close);
+    const pc = j > 0 ? v(rows[j - 1].close) : null;
+    const vol = v(rows[j].volume) || 0;
+    if (c != null && pc != null && vol > 0) {
+      if (c > pc) val += vol;
+      else if (c < pc) val -= vol;
+    }
+    obv.push(val);
+  }
+  const cur = obv[i];
+  let score = 0;
+  const desc = [];
+
+  // 近20日均线（含当日）与金叉死叉
+  let s20 = 0;
+  for (let j = Math.max(0, i - 19); j <= i; j++) s20 += obv[j];
+  const ma20 = s20 / Math.min(20, i + 1);
+  if (cur > ma20) { score += 12; desc.push('OBV站上20日均线，资金净流入趋势'); }
+  else if (cur < ma20) { score -= 12; desc.push('OBV跌破20日均线，资金净流出趋势'); }
+  if (i >= 1) {
+    let s20p = 0;
+    for (let j = Math.max(0, i - 20); j < i; j++) s20p += obv[j];
+    const ma20p = s20p / Math.min(20, i);
+    if (obv[i - 1] <= ma20p && cur > ma20) { score += 20; desc.push('OBV上穿20日均线(金叉)，资金进场'); }
+    else if (obv[i - 1] >= ma20p && cur < ma20) { score -= 20; desc.push('OBV下穿20日均线(死叉)，资金离场'); }
+  }
+
+  // 顶/底背离与创新高/低确认（对比此前近20日高低点）
+  let obvHi = -Infinity, obvLo = Infinity, priceHi = -Infinity, priceLo = Infinity;
+  for (let j = Math.max(0, i - 19); j < i; j++) {
+    obvHi = Math.max(obvHi, obv[j]);
+    obvLo = Math.min(obvLo, obv[j]);
+    const h = v(rows[j].high), l = v(rows[j].low);
+    if (h != null) priceHi = Math.max(priceHi, h);
+    if (l != null) priceLo = Math.min(priceLo, l);
+  }
+  const c = v(rows[i].close);
+  if (c != null && isFinite(priceHi) && isFinite(priceLo) && isFinite(obvHi) && isFinite(obvLo)) {
+    if (c > priceHi && cur <= obvHi) { score -= 35; desc.push('价格创新高但OBV未跟进(顶背离)，上涨动力存疑'); }
+    if (c < priceLo && cur >= obvLo) { score += 35; desc.push('价格创新低但OBV未创新低(底背离)，下跌动力衰竭'); }
+    if (c <= priceHi && cur > obvHi) { score += 20; desc.push('OBV创新高而价格未创新高，强势确认'); }
+    if (c >= priceLo && cur < obvLo) { score -= 20; desc.push('OBV创新低而价格未创新低，弱势确认'); }
+  }
+
+  // 近5日 OBV 斜率（按5日均量归一化）
+  let s5 = 0, n5 = 0;
+  for (let j = Math.max(0, i - 4); j <= i; j++) { const x = v(rows[j].volume); if (x != null && x > 0) { s5 += x; n5++; } }
+  const avgVol = n5 ? s5 / n5 : 1;
+  if (avgVol > 0) {
+    const delta5 = cur - obv[Math.max(0, i - 5)];
+    const k = delta5 / avgVol;
+    if (k >= 3) { score += 15; desc.push(`近5日OBV上升(${k.toFixed(1)}日均量)，资金持续流入`); }
+    else if (k <= -3) { score -= 15; desc.push(`近5日OBV下降(${Math.abs(k).toFixed(1)}日均量)，资金持续流出`); }
+    else desc.push(`近5日OBV变化不大(${k.toFixed(1)}日均量)`);
+  }
+  if (!desc.length) desc.push('OBV中性');
+  return { score: clamp(score, -100, 100), desc };
+}
+
+// 因子定义表（顺序固定；desc 为详细打分规则，点击因子可查看）
+const FACTOR_DEFS = [
+  { key: 'main', name: '主力成交', calc: factorMainCap,
+    desc: '主力净流入占成交额比例打分：\n· 今日占比每 5% 计 ±50 分（净流入为正）\n· 近3日累计占比每 5% 计 ±35 分\n· 较上日放大 +15 / 缩小 -15\n注：数据缺失（仅近期交易日有）不计分' },
+  { key: 'vol', name: '成交量', calc: factorVolume,
+    desc: '量能趋势=近5日均量÷近20日均量：\n· ≥1.2 明显放量：上涨 +60 / 下跌 -60\n· 1.05~1.2 温和放量：上涨 +30 / 下跌 -30\n· 0.8~1.05 量能平稳：上涨 -10 / 下跌 -10\n· ≤0.8 明显缩量：上涨 -40 / 下跌 +40(卖压衰竭)' },
+  { key: 'turnover', name: '换手率', calc: factorTurnover,
+    desc: '换手活跃度打分（越高越活跃）：\n· >20% -45 过热，短线分歧极大，警惕见顶\n· 15~20% -30 高度活跃，注意风险\n· 10~15% ±25 高度活跃，跟随涨跌方向\n· 5~10% +40 活跃，短线人气佳\n· 3~5% +25 温和活跃\n· 1~3% +5 交投一般\n· ≤1% -20 过于清淡，流动性差\n加项：放量上涨+换手3~10% +10；高换手下跌≥10% -15(警惕出货)' },
+  { key: 'volratio', name: '量比', calc: factorVolRatio,
+    desc: '当日量比×涨跌方向（放量配合方向才有效）：\n· 放量上涨抢筹：量比≥2.5 +70 / ≥1.5 +45 / ≥1.0 +20 / 缩量上涨 -20\n· 放量下跌抛压：量比≥2.5 -70 / ≥1.5 -45 / ≥1.0 -20 / 缩量下跌 +25(卖压趋缓)\n· 平盘：放量(≥1.5) +10，多空分歧加大' },
+  { key: 'rsi', name: 'RSI', calc: factorRSI,
+    desc: 'RSI6 超买超卖：\n· ≤20 深度超卖 +60 / ≤30 +40 / ≤40 +15\n· ≥80 深度超买 -60 / ≥70 -40 / ≥60 -15\n· 其余中性\n交叉：RSI6上穿RSI14金叉 +25 / 下穿死叉 -25\n趋势：RSI6上行 +8 / 下行 -8' },
+  { key: 'kdj', name: 'KDJ', calc: factorKDJ,
+    desc: 'K值区间：≤20 +50 / ≤30 +25 / ≥70 -25 / ≥80 -50\nJ值极值：≤0 触底 +30 / ≥100 超买极值 -30\n交叉：K上穿D金叉 +30 / K下穿D死叉 -30' },
+  { key: 'bias', name: '乖离率', calc: factorBias,
+    desc: '负乖离超跌利多 / 正乖离超买利空：\n· BIAS5：≤-5 +50 / ≤-3 +30 / ≥4 -30 / ≥6 -50\n· BIAS10：≤-8 +35 / ≤-5 +20 / ≥8 -20 / ≥12 -35\n· BIAS20：≤-12 +25 / ≥16 -25' },
+  { key: 'macd', name: 'MACD', calc: factorMacd,
+    desc: '状态：DIF在DEA上方(多头) +25 / 下方(空头) -25\n柱体：红柱 +20 / 绿柱 -20\n变化速率：柱体较上日变大 +30(动能增强) / 变小 -30\n交叉：金叉 +25 / 死叉 -25' },
+  { key: 'candle', name: 'K线形状', calc: factorCandle,
+    desc: '实体：长阳(≥3%) +40 / 长阴(≤-3%) -40\n影线：长上影(≥60%振幅) -25 / 长下影(≥60%振幅) +25\n位置：收盘20日高位(≥90%) -20 / 低位(≤10%) +20\n延续：连阳≥3日 +15 / 连阴≥3日 -15' },
+  { key: 'ma', name: '均线', calc: factorMA,
+    desc: '排列：多头排列(MA5>MA10>MA20>MA30) +40 / 空头排列 -40\n站上：每多站上1条均线 +12（基准2条，站上越多越强）\n交叉：MA5上穿MA10 +20 / 下穿 -20；上穿MA20 +15 / 下穿 -15\n趋势：MA5上行 +8 / 下行 -8' },
+  { key: 'obv', name: 'OBV', calc: factorOBV,
+    desc: 'OBV=收涨累加量/收跌累减量的能量潮指标：\n· 站上20日均线 +12 / 跌破 -12；上穿金叉 +20 / 下穿死叉 -20\n· 顶背离(价创新高OBV未跟上) -35 / 底背离(价创新低OBV未新低) +35\n· OBV创新高而价未新高 +20 / 反向 -20\n· 近5日OBV变化≥3日均量 +15 / ≤-3 -15' },
+  { key: 'fund', name: '基本面', calc: null,
+    desc: '流通市值（来自 stock_info）：\n· 30~300亿(活跃适中) +30\n· 10~30亿(小盘活跃) +15\n· 300~1000亿(中大盘) +10\n· >1000亿(大盘权重，短线难动) -20\n· <10亿(微盘，风险高) -10\n上市年限：<1年次新 +15 / 1~5年 +8 / 成熟0分' },
+];
+
+const DEFAULT_WEIGHTS = { main: 20, vol: 12, turnover: 10, volratio: 10, rsi: 12, kdj: 12, bias: 10, macd: 15, candle: 10, ma: 12, obv: 10, fund: 6 };
+
+// 当前权重（从页面控件读取）
+function getWeights() {
+  const w = {};
+  FACTOR_DEFS.forEach(f => {
+    const el = document.getElementById('w_' + f.key);
+    w[f.key] = parseInt(el ? el.value : 0) || 0;
+  });
+  return w;
+}
+function resetWeights() {
+  Object.entries(DEFAULT_WEIGHTS).forEach(([k, val]) => {
+    const el = document.getElementById('w_' + k);
+    if (el) { el.value = val; document.getElementById('wv_' + k).textContent = val; }
+  });
+  applyWeights();
+}
+function applyWeights() {
+  if (window.__klineData && window.__stockInfo) runPrediction(window.__klineData, window.__stockInfo);
+  else showError('请先读取股票数据');
+}
+function initWeightGrid() {
+  const grid = document.getElementById('weightGrid');
+  grid.innerHTML = FACTOR_DEFS.map(f => `
+    <div class="weight-item">
+      <span class="name" style="cursor:pointer;" onclick="showFactorModal('${f.key}')" title="点击查看打分依据">${f.name}</span>
+      <input type="range" id="w_${f.key}" min="0" max="30" value="${DEFAULT_WEIGHTS[f.key]}"
+             oninput="document.getElementById('wv_${f.key}').textContent=this.value; schedulePredict()"
+             title="${f.desc}">
+      <span class="val" id="wv_${f.key}">${DEFAULT_WEIGHTS[f.key]}</span>
+    </div>`).join('');
+}
+let _predictTimer = null;
+function schedulePredict() {
+  clearTimeout(_predictTimer);
+  _predictTimer = setTimeout(() => {
+    if (window.__klineData && window.__stockInfo) runPrediction(window.__klineData, window.__stockInfo);
+  }, 200);
+}
+
+// ============ 综合评分 ============
+// 对第 i 根K线计算 12 因子加权总分 S ∈ [-100, 100]
+function scoreAt(rows, i, weights, info) {
+  const parts = FACTOR_DEFS.map(f => {
+    const res = f.key === 'fund' ? factorFundamental(info) : f.calc(rows, i);
+    return { key: f.key, name: f.name, weight: weights[f.key] || 0, ...res };
+  });
+  let totalW = 0, sum = 0;
+  parts.forEach(p => { totalW += p.weight; sum += p.weight * p.score; });
+  const S = totalW > 0 ? clamp(sum / totalW, -100, 100) : 0;
+  return { S, parts };
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 点击因子弹窗：查看该因子的打分规则（不选股票也能看）；运行预测后附加实时评分与依据
+function showFactorModal(key) {
+  const def = FACTOR_DEFS.find(f => f.key === key);
+  if (!def) return;
+  const parts = window.__factorParts || [];
+  const p = parts.find(x => x.key === key);
+  const totalW = parts.length ? parts.reduce((a, x) => a + x.weight, 0) : 0;
+  const hasData = !!p;
+  const pos = hasData ? p.score >= 0 : true;
+  const scoreCls = hasData ? (pos ? '#e8453c' : '#34a853') : '#888';
+  const contrib = hasData && totalW > 0 ? p.score * p.weight / totalW : null;
+
+  let mask = document.getElementById('factorModal');
+  if (!mask) {
+    mask = document.createElement('div');
+    mask.id = 'factorModal';
+    mask.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none;' +
+      'align-items:center; justify-content:center; z-index:99999;';
+    mask.innerHTML = '<div style="background:#fff; border-radius:8px; max-width:560px; width:92%;' +
+      'box-shadow:0 8px 30px rgba(0,0,0,0.25); overflow:hidden;">' +
+      '<div id="fmTitle" style="display:flex; justify-content:space-between; align-items:center;' +
+      'padding:12px 18px; font-weight:600; font-size:15px; background:#1a73e8; color:#fff;">' +
+      '<span id="fmTitleText"></span>' +
+      '<span id="fmClose" style="cursor:pointer; font-size:20px; line-height:1;">&times;</span></div>' +
+      '<div id="fmBody" style="padding:16px 18px; font-size:13px; color:#333; line-height:1.8;' +
+      'max-height:62vh; overflow:auto;"></div>' +
+      '<div style="padding:12px 18px; text-align:right; border-top:1px solid #eee;">' +
+      '<button id="fmOk" style="background:#1a73e8; color:#fff; border:none; padding:7px 26px;' +
+      'border-radius:4px; cursor:pointer; font-size:13px;">知道了</button></div></div>';
+    document.body.appendChild(mask);
+    const hide = () => { mask.style.display = 'none'; };
+    mask.addEventListener('click', e => { if (e.target === mask) hide(); });
+    mask.querySelector('#fmClose').onclick = hide;
+    mask.querySelector('#fmOk').onclick = hide;
+  }
+
+  const whyHtml = (p && p.desc && p.desc.length)
+    ? p.desc.map(d => `<div style="padding:6px 10px; border-left:3px solid #1a73e8; background:#f8f9fa; border-radius:3px; margin:6px 0;">${esc(d)}</div>`).join('')
+    : '';
+  const scoreHtml = hasData
+    ? `<div style="margin-bottom:10px; white-space:nowrap;">
+        <span style="font-weight:700; color:${scoreCls}; font-size:15px;">${p.name} ${pos ? '+' : ''}${p.score.toFixed(1)} 分</span>
+        <span style="color:#888; margin-left:12px;">权重 ${p.weight} · 加权后贡献 ${contrib >= 0 ? '+' : ''}${contrib.toFixed(1)}</span>
+      </div>`
+    : '';
+  const detailHtml = hasData
+    ? `<div style="font-weight:600; color:#666; margin:10px 0 4px;">打分依据明细</div>${whyHtml}`
+    : '<div style="color:#999; margin-top:8px;">读取股票数据并运行预测后，此处展示该因子的实时打分依据</div>';
+  mask.querySelector('#fmTitleText').textContent = `${def.name} · 打分规则`;
+  mask.querySelector('#fmBody').innerHTML = `
+    ${scoreHtml}
+    <div style="color:#555; margin-bottom:6px; white-space:pre-wrap; line-height:1.7;">规则：${esc(def.desc)}</div>
+    ${detailHtml}`;
+  mask.style.display = 'flex';
+}
+
+// 概率与结论
+function verdictOf(S) {
+  if (S >= 30) return { action: '建议买入', sub: '可买入（强）', cls: 'up', color: '#e8453c' };
+  if (S >= 15) return { action: '建议买入', sub: '可买入（中）', cls: 'up', color: '#e8453c' };
+  if (S >= 5) return { action: '偏多关注', sub: '谨慎买入', cls: 'up', color: '#e0873c' };
+  if (S > -5) return { action: '观望', sub: '等待方向确认', cls: 'hold', color: '#9e9e9e' };
+  if (S > -15) return { action: '偏空警惕', sub: '谨慎卖出', cls: 'down', color: '#7db45a' };
+  if (S > -30) return { action: '建议卖出', sub: '可卖出（中）', cls: 'down', color: '#34a853' };
+  return { action: '建议卖出', sub: '可卖出（强）', cls: 'down', color: '#34a853' };
+}
+
+// 支撑位 / 压力位
+function calcLevels(rows, i) {
+  const r = rows[i];
+  const close = v(r.close);
+  const start = Math.max(0, i - 19);
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let j = start; j <= i; j++) {
+    const h = v(rows[j].high), l = v(rows[j].low);
+    if (h != null) hi20 = Math.max(hi20, h);
+    if (l != null) lo20 = Math.min(lo20, l);
+  }
+  const cands = [['MA5', v(r.ma5)], ['MA10', v(r.ma10)], ['MA20', v(r.ma20)], ['20日低', lo20]];
+  const supports = cands.filter(([, m]) => m != null && m < close).sort((a, b) => b[1] - a[1]);
+  const resistCands = cands.concat([['20日高', hi20]]);
+  const resists = resistCands.filter(([, m]) => m != null && m > close).sort((a, b) => a[1] - b[1]);
+  const s1 = supports.length ? supports[0] : null;
+  const s2 = supports.length > 1 ? supports[1] : null;
+  const r1 = resists.length ? resists[0] : null;
+  const r2 = resists.length > 1 ? resists[1] : null;
+  return {
+    s1: s1 ? s1[1] : (close ? close * 0.97 : null),
+    s1Name: s1 ? s1[0] : '3%回撤',
+    s2: s2 ? s2[1] : null,
+    s2Name: s2 ? s2[0] : null,
+    r1: r1 ? r1[1] : (close ? close * 1.05 : null),
+    r1Name: r1 ? r1[0] : '5%目标',
+    r2: r2 ? r2[1] : null,
+    r2Name: r2 ? r2[0] : null,
+    hi20: isFinite(hi20) ? hi20 : null,
+    lo20: isFinite(lo20) ? lo20 : null,
+  };
+}
+
+// 买卖时机建议文案
+function timingAdvice(S, L) {
+  const s1 = L.s1, r1 = L.r1;
+  const stop = s1 ? Math.round(s1 * 0.97 * 100) / 100 : null;
+  if (S >= 15) {
+    return `回踩 ${L.s1Name}(${fmtNum(s1)}) 企稳可分批买入（首批1/3），放量突破 ${L.r1Name}(${fmtNum(r1)}) 可加仓；跌破 ${fmtNum(stop)} 止损`;
+  }
+  if (S <= -15) {
+    return `反弹至 ${L.r1Name}(${fmtNum(r1)}) 附近分批减仓（先卖1/2），剩余仓位跌破 ${fmtNum(s1)} 全部离场`;
+  }
+  return `等待 ${fmtNum(s1)} 附近企稳信号或放量突破 ${fmtNum(r1)} 再介入，跌破 ${fmtNum(stop)} 观望回避`;
+}
+
+// ============ 历史信号（回看模型信号 + 命中统计） ============
+const BUY_TH = 25, SELL_TH = -25;
+function computeSignals(rows, weights, info) {
+  const signals = [];
+  let prevScore = null;
+  for (let t = 40; t < rows.length; t++) {
+    const { S } = scoreAt(rows, t, weights, info);
+    if (prevScore != null) {
+      if (S >= BUY_TH && prevScore < BUY_TH - 8) signals.push({ t, type: 'buy', S });
+      else if (S <= SELL_TH && prevScore > SELL_TH + 8) signals.push({ t, type: 'sell', S });
+    }
+    prevScore = S;
+  }
+  return signals;
+}
+
+function signalStats(rows, signals) {
+  let buyWin = 0, buyCnt = 0, sellWin = 0, sellCnt = 0;
+  signals.forEach(sg => {
+    const t = sg.t;
+    if (t + 5 < rows.length) {
+      const ret = rows[t + 5].close / rows[t].close - 1;
+      sg.ret5 = ret;
+      if (sg.type === 'buy') { buyCnt++; if (ret > 0) buyWin++; }
+      else { sellCnt++; if (ret < 0) sellWin++; }
+    }
+  });
+  return { buyWin, buyCnt, sellWin, sellCnt };
+}
+
+// ============ 明日走势形态预测（9种形态概率推断） ============
+// 9 种形态按 偏多→中性→偏空 排列，与后端 classify_trend 判定规则一致
+const TREND_DEFS = [
+  { key: 'surge_up', name: '放量大涨', color: '#e8453c' },
+  { key: 'gap_up_high', name: '高开高走', color: '#e26d3c' },
+  { key: 'open_high', name: '平开高走', color: '#f07a4a' },
+  { key: 'dip_recover', name: '探底回升', color: '#d9a93f' },
+  { key: 'range', name: '日内震荡', color: '#9e9e9e' },
+  { key: 'rise_fall', name: '冲高回落', color: '#c98a3a' },
+  { key: 'gap_up_low', name: '高开低走', color: '#8aae4f' },
+  { key: 'open_low', name: '低开低走', color: '#7db45a' },
+  { key: 'surge_down', name: '放量大跌', color: '#34a853' },
+];
+const TREND_NAMES = Object.fromEntries(TREND_DEFS.map(t => [t.key, t.name]));
+
+// 基于今日量价/MACD/RSI/K线位置推断明日九种走势形态的概率
+function predictTrendScores(rows, i) {
+  const r = rows[i], pr = rows[i - 1];
+  const prevClose = pr ? v(pr.close) : null;
+  const open = v(r.open), close = v(r.close), high = v(r.high), low = v(r.low);
+  const pct = v(r.pct_change) != null ? v(r.pct_change) : (prevClose ? (close / prevClose - 1) * 100 : 0);
+  const vol = v(r.volume), amount = v(r.amount);
+  const inflow = v(r.main_net_inflow);
+  const dif = v(r.macd_dif), dea = v(r.macd_dea), hist = v(r.macd_hist);
+  const prevHist = pr ? v(pr.macd_hist) : null;
+  const rsi6 = v(r.rsi6);
+  const ma5 = v(r.ma5), ma20 = v(r.ma20);
+
+  // 量比（无 volume_ratio 时用今量/前5日均量估算）
+  let vr = v(r.volume_ratio);
+  if (vr == null && vol != null && vol > 0) {
+    let s = 0, n = 0;
+    for (let j = Math.max(0, i - 5); j < i; j++) { const x = v(rows[j].volume); if (x != null && x > 0) { s += x; n++; } }
+    vr = n ? vol / (s / n) : null;
+  }
+  const surge = vr != null && vr >= 1.5;
+
+  // 20日区间位置
+  const start = Math.max(0, i - 19);
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let j = start; j <= i; j++) {
+    const h = v(rows[j].high), l = v(rows[j].low);
+    if (h != null) hi20 = Math.max(hi20, h);
+    if (l != null) lo20 = Math.min(lo20, l);
+  }
+  const pos = (isFinite(hi20) && isFinite(lo20) && hi20 > lo20) ? (close - lo20) / (hi20 - lo20) : 0.5;
+
+  // 影线结构
+  const range = (high != null && low != null) ? high - low : 0;
+  const bodyPct = prevClose ? (close - open) / prevClose * 100 : 0;
+  const upper = range > 0 ? (high - Math.max(open, close)) / range : 0;
+  const lower = range > 0 ? (Math.min(open, close) - low) / range : 0;
+
+  // 连阳连阴
+  const upStreak = pct >= 0;
+  let streak = 1;
+  for (let j = i - 1; j >= 0; j--) {
+    const pc = v(rows[j].pct_change);
+    if (pc == null) break;
+    if ((pc >= 0) === upStreak) streak++; else break;
+  }
+
+  const S = { surge_up: 0, gap_up_high: 0, open_high: 0, dip_recover: 0, range: 0, rise_fall: 0, gap_up_low: 0, open_low: 0, surge_down: 0 };
+  const why = [];
+
+  // 高开/低开幅度（与后端 classify_trend 判定口径一致：±0.8% 为界）
+  const gap = (prevClose && open != null) ? (open / prevClose - 1) * 100 : 0;
+
+  // 放量大涨
+  if (pct >= 5 && surge) { S.surge_up += 30; why.push(`今日放量大涨${pct.toFixed(2)}%、量比${vr.toFixed(2)}，资金强势进场`); }
+  else if (pct >= 3 && surge) { S.surge_up += 22; why.push(`今日放量上攻${pct.toFixed(2)}%（量比${vr.toFixed(2)}）`); }
+  else if (pct > 0 && surge && inflow != null && inflow > 0) { S.surge_up += 12; why.push('放量且主力净流入，多头动能充足'); }
+  if (pct > 0 && surge && pos >= 0.9) { S.surge_up += 8; why.push('放量突破20日高位，明日有望延续'); }
+
+  // 高开高走：高开 + 收阳 + 涨幅可观（多头延续，强势买入形态）
+  if (gap >= 0.8 && close > open && pct >= 1.5) {
+    S.gap_up_high += 22;
+    why.push(`今日高开${gap.toFixed(1)}%且收阳、涨${pct.toFixed(2)}%，多头强势延续`);
+    if (surge || (inflow != null && inflow > 0)) { S.gap_up_high += 10; why.push('高开高走配合放量/主力流入，明日易惯性上冲'); }
+  }
+
+  // 高开低走：高开 + 收阴 / 冲高回落（诱多出货，最危险卖出信号）
+  if (gap >= 0.8 && (close <= open || upper >= 0.5)) {
+    S.gap_up_low += 24;
+    why.push(`今日高开${gap.toFixed(1)}%却${close <= open ? '收阴' : '冲高回落'}，诱多出货特征明显`);
+    if (close <= open && pct <= -1.5) { S.gap_up_low += 10; why.push('高开收大阴线，明日恐继续低走'); }
+  }
+
+  // 探底回升：低开/平开 + 长下影收阳（下方承接强，先抑后扬）
+  if (lower >= 0.5 && close > open) {
+    S.dip_recover += 18;
+    why.push('今日长下影线收阳，下方承接强，明日易探底回升');
+    if (gap <= -0.8) { S.dip_recover += 8; why.push('低开反包收阳，空头被击穿，反弹动能足'); }
+  }
+
+  // 放量大跌
+  if (pct <= -5 && surge) { S.surge_down += 30; why.push(`今日放量大跌${pct.toFixed(2)}%、量比${vr.toFixed(2)}，恐慌抛售`); }
+  else if (pct <= -3 && surge) { S.surge_down += 22; why.push(`今日放量下杀${pct.toFixed(2)}%（量比${vr.toFixed(2)}）`); }
+  else if (pct < 0 && surge && inflow != null && inflow < 0) { S.surge_down += 12; why.push('放量且主力净流出，抛压沉重'); }
+
+  // 冲高回落
+  if (upper >= 0.6) { S.rise_fall += 20; why.push('今日长上影线，上方抛压明显，明日易冲高回落'); }
+  if (upStreak && streak >= 3 && pos >= 0.85) { S.rise_fall += 15; why.push(`连涨${streak}日且处20日高位，获利盘回吐压力大`); }
+  if (rsi6 != null && rsi6 >= 75) { S.rise_fall += 10; why.push(`RSI6=${rsi6.toFixed(0)} 超买，冲高易回落`); }
+  if (surge && pct > 0 && Math.abs(bodyPct) < 2) { S.rise_fall += 12; why.push('放量滞涨（量大涨幅小），明日警惕冲高回落'); }
+
+  // 平开高走（长下影收阳已归入探底回升，此处只处理实体驱动的走强）
+  if (pct > 0 && !surge && vr != null && vr < 0.95) { S.open_high += 16; why.push('今日缩量上涨，筹码惜售，明日易平开高走'); }
+  if (dif != null && dea != null && hist != null && dif >= dea && hist > 0 && (prevHist == null || hist >= prevHist)) {
+    S.open_high += 12; why.push('MACD红柱放大，动能增强，震荡走高概率大');
+  }
+  if (pct < 0 && !surge && vr != null && vr < 0.9 && pos <= 0.3) { S.open_high += 10; why.push('低位缩量企稳，抛压衰竭，明日易低开高走'); }
+
+  // 低开低走
+  if (pct <= -3 && !surge) { S.open_low += 15; why.push(`今日下跌${pct.toFixed(2)}%且收盘走弱`); }
+  if (close != null && ma5 != null && ma20 != null && close < ma5 && close < ma20) {
+    S.open_low += 12; why.push('收盘跌破MA5/MA20，短期转弱，明日易低开走低');
+  }
+  if (dif != null && dea != null && hist != null && dif < dea && hist < 0 && (prevHist == null || hist <= prevHist)) {
+    S.open_low += 12; why.push('MACD绿柱放大，空头动能增强，易低开低走');
+  }
+  if (pct < 0 && inflow != null && amount != null && amount > 0 && inflow / amount < -0.05) {
+    S.open_low += 8; why.push('主力净流出占比超5%，抛压持续');
+  }
+
+  // 日内震荡
+  if (range > 0 && prevClose && range / prevClose * 100 < 4 && Math.abs(pct) < 1.5 && vr != null && vr >= 0.9 && vr <= 1.15) {
+    S.range += 18; why.push('量价平稳、多空平衡，明日或以日内震荡为主');
+  }
+  if (Math.abs(bodyPct) < 0.5 && range > 0 && prevClose && range / prevClose * 100 >= 3) {
+    S.range += 15; why.push('今日十字星，多空犹豫，明日大概率震荡');
+  }
+  if (hist != null && prevHist != null && Math.abs(hist - prevHist) < 0.0005) {
+    S.range += 10; why.push('MACD动能与今日齐平，方向不明，震荡为主');
+  }
+
+  // 归一化为概率
+  const total = Object.values(S).reduce((a, b) => a + b, 0);
+  let probs = {};
+  if (total > 0) {
+    probs = Object.fromEntries(Object.entries(S).map(([k, sc]) => [k, Math.round(sc / total * 100)]));
+  } else {
+    probs = { range: 100 };
+  }
+  const sorted = Object.entries(S).sort((a, b) => b[1] - a[1]);
+  const main = { key: sorted[0][0], name: TREND_NAMES[sorted[0][0]], prob: probs[sorted[0][0]] };
+  const second = { key: sorted[1][0], name: TREND_NAMES[sorted[1][0]], prob: probs[sorted[1][0]] };
+  return { S, probs, main, second, reasons: why.slice(0, 5) };
+}
+
+// ============ 明日操作策略（量能/MACD场景 + 分时/价位预案） ============
+function buildStrategyAdvice(rows, i, L) {
+  const r = rows[i], pr = rows[i - 1];
+  const pct = v(r.pct_change) != null ? v(r.pct_change) : 0;
+  const vol = v(r.volume);
+  let s = 0, n = 0;
+  for (let j = Math.max(0, i - 5); j < i; j++) { const x = v(rows[j].volume); if (x != null && x > 0) { s += x; n++; } }
+  let vr = (vol != null && vol > 0 && n > 0) ? vol / (s / n) : v(r.volume_ratio);
+  const close = v(r.close);
+  const start = Math.max(0, i - 19);
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let j = start; j <= i; j++) {
+    const h = v(rows[j].high), l = v(rows[j].low);
+    if (h != null) hi20 = Math.max(hi20, h);
+    if (l != null) lo20 = Math.min(lo20, l);
+  }
+  const pos = (isFinite(hi20) && isFinite(lo20) && hi20 > lo20) ? (close - lo20) / (hi20 - lo20) : 0.5;
+  const hist = v(r.macd_hist), prevHist = pr ? v(pr.macd_hist) : null;
+  const surge = vr != null && vr >= 1.5;
+
+  const advice = [];
+  let volScene = '平稳', macdScene = '齐平';
+
+  // 成交量场景：萎缩 / 放大 / 平稳
+  if (vr != null && vr <= 0.85) {
+    volScene = '缩量';
+    if (pct > 0) advice.push('成交量萎缩且今日上涨（缩量上涨）：上攻动能不足，明日若不能放量站稳，冲高即减仓，勿追高');
+    else if (pct < 0) advice.push('成交量萎缩且今日下跌（缩量下跌）：卖压衰竭，明日企稳可轻仓低吸，跌破今日低点则观望');
+    else advice.push('缩量平盘：方向不明，观望为主，等放量再决策');
+    if (pos >= 0.85) advice.push('高位缩量滞涨：警惕变盘回落，仓位控制在半仓以内');
+    else if (pos <= 0.2) advice.push('低位缩量：抛压枯竭，可分批低吸布局');
+  } else if (vr != null && vr >= 1.3) {
+    volScene = '放大';
+    if (pct >= 3) advice.push('放量上涨：资金积极进场，明日回踩不破今日收盘可持股或低吸加仓；若冲高遇阻滞涨，先兑现部分利润');
+    else if (pct <= -3) advice.push('放量下跌：抛压沉重，明日反弹至压力位分批减仓，勿轻易抄底接飞刀');
+    else advice.push(`放量滞涨（量比${vr.toFixed(2)}、涨幅${Math.abs(pct).toFixed(2)}%）：高位巨量疑似出货，明日高开优先减仓；若处低位则可能是异动启动，轻仓试探`);
+  } else {
+    volScene = '平稳';
+    advice.push('量能平稳：跟随方向信号操作，放量突破压力或缩量回踩支撑再决策');
+  }
+
+  // MACD 场景：增强 / 齐平 / 萎缩
+  if (hist != null && prevHist != null) {
+    const diff = hist - prevHist;
+    if (diff > 0.0005) {
+      macdScene = '增强';
+      advice.push('MACD动能增强（柱体扩大）：趋势延续概率大，可持股或回踩低吸，止损位可上移');
+    } else if (diff < -0.0005) {
+      macdScene = '萎缩';
+      if (hist > 0) advice.push('MACD红柱萎缩：上涨动能减弱，冲高分批止盈，跌破止损位离场');
+      else advice.push('MACD绿柱放大：下跌动能增强，以回避为主，反弹减仓');
+    } else {
+      macdScene = '齐平';
+      advice.push('MACD与今日齐平：动能停滞无方向，减仓观望，等柱体方向选择后再操作');
+    }
+  } else {
+    advice.push('MACD数据缺失，无法判断动能变化');
+  }
+
+  // 明日分时预案（按开盘情形，短线实操）
+  const openPlans = [];
+  const hasL = !!(L && L.s1 && L.r1);
+  const s1Txt = hasL ? `${L.s1Name}(${fmtNum(L.s1)})` : '支撑位';
+  const r1Txt = hasL ? `${L.r1Name}(${fmtNum(L.r1)})` : '压力位';
+  const stopTxt = hasL ? fmtNum(Math.round(L.s1 * 0.97 * 100) / 100) : '止损位';
+
+  if (surge && Math.abs(pct) < 2) {
+    openPlans.push({ k: '高开', text: `高开即冲高减仓：放量滞涨疑似出货，冲高到${r1Txt}分批止盈，不追高` });
+  } else if (pct >= 3 && surge) {
+    openPlans.push({ k: '高开', text: `高开回踩不破今日收盘可持股，放量站上${r1Txt}再加仓` });
+  } else {
+    openPlans.push({ k: '高开', text: `高开不追：冲高到${r1Txt}先减1/3兑现，回踩企稳再低吸` });
+  }
+
+  if (vr != null && vr <= 0.85) {
+    openPlans.push({ k: '平开', text: '平开缩量观望：等放量突破或缩量回踩企稳再决策，不抢先手' });
+  } else if (pct <= -3) {
+    openPlans.push({ k: '平开', text: `平开弱势不抄底：跌破${s1Txt}即减仓，反弹到${r1Txt}续减` });
+  } else {
+    openPlans.push({ k: '平开', text: `平开看前30分钟方向：放量上攻跟突破，跌破${s1Txt}离场` });
+  }
+
+  if (pct <= -3 && surge) {
+    openPlans.push({ k: '低开', text: '低开恐慌放量：不接飞刀，等缩量止跌企稳信号再低吸' });
+  } else if (pos <= 0.3 && vr != null && vr <= 0.85) {
+    openPlans.push({ k: '低开', text: `低开不破${s1Txt}企稳可轻仓低吸（1/3），破位观望` });
+  } else {
+    openPlans.push({ k: '低开', text: `低开看支撑：不破${s1Txt}企稳可低吸，跌破${s1Txt}离场回避` });
+  }
+
+  // 关键价位预案（与上方买卖时机卡一致）
+  const pricePlans = [];
+  if (hasL) {
+    pricePlans.push(`放量站上 ${L.r1Name}(${fmtNum(L.r1)}) → 突破加仓/追入`);
+    pricePlans.push(`回踩 ${L.s1Name}(${fmtNum(L.s1)}) 企稳 → 分批低吸（首批1/3）`);
+    pricePlans.push(`跌破 ${L.s1Name}(${fmtNum(L.s1)}) → 减仓防御`);
+    pricePlans.push(`跌破止损位 ${stopTxt} → 无条件离场`);
+  }
+
+  return { volScene, macdScene, volRatio: vr, advice, openPlans, pricePlans };
+}
+
+// ============ 主预测流程 ============
+function runPrediction(rows, info) {
+  const weights = getWeights();
+  const i = rows.length - 1;
+  const res = scoreAt(rows, i, weights, info);
+  const S = res.S;
+  const verdict = verdictOf(S);
+  const P_up = clamp(Math.round(50 + S / 2), 5, 95);
+  const P_down = 100 - P_up;
+  const L = calcLevels(rows, i);
+  const last = rows[i];
+
+  // 历史信号
+  const signals = computeSignals(rows, weights, info);
+  const stats = signalStats(rows, signals);
+
+  // 明日走势形态预测 + 操作策略
+  const trend = predictTrendScores(rows, i);
+  const adv = buildStrategyAdvice(rows, i, L);
+
+  // 因子条（点击因子行弹窗查看打分依据）
+  window.__factorParts = res.parts;
+  const factorHtml = res.parts.map(p => {
+    const sc = p.score;
+    const w = p.weight;
+    const pos = sc >= 0;
+    const width = Math.max(2, Math.abs(sc));
+    const fillCss = pos
+      ? `left:50%; width:${width}%; background:#e8453c;`
+      : `right:50%; width:${width}%; background:#34a853;`;
+    const wt = w ? `权重${w}` : '未启用';
+    const weightNote = w === 0 ? '（权重为0不计入总分）' : '';
+    return `
+      <div class="factor-row" onclick="showFactorModal('${p.key}')" title="点击查看打分依据">
+        <span class="fname">${p.name}</span>
+        <div class="fbar"><div class="mid"></div><div class="fill" style="${fillCss}"></div></div>
+        <span class="fscore ${pos ? 'up' : 'down'}">${sc >= 0 ? '+' : ''}${sc.toFixed(0)}</span>
+        <div class="fdesc">${p.desc.join('；')}${weightNote} <span style="color:#aaa">(${wt})</span></div>
+      </div>`;
+  }).join('');
+
+  // 历史信号表格（最近12条）
+  const recentSignals = signals.slice(-12).reverse();
+  let sigHtml = '';
+  if (recentSignals.length) {
+    sigHtml = recentSignals.map(sg => {
+      const retTxt = sg.ret5 === undefined ? '-' : ((sg.ret5 >= 0 ? '+' : '') + (sg.ret5 * 100).toFixed(2) + '%');
+      const retCls = sg.ret5 === undefined ? '' : (sg.ret5 > 0 ? 'up' : 'down');
+      return `<tr>
+        <td>${rows[sg.t].date}</td>
+        <td><span class="tag ${sg.type}">${sg.type === 'buy' ? '买入' : '卖出'}</span></td>
+        <td class="${sg.S >= 0 ? 'up' : 'down'}">${sg.S >= 0 ? '+' : ''}${sg.S.toFixed(0)}</td>
+        <td>${fmtNum(rows[sg.t].close)}</td>
+        <td class="${retCls}">${retTxt}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    sigHtml = '<tr><td colspan="5" style="color:#999; text-align:center;">所选区间内未产生信号（可扩大数据范围）</td></tr>';
+  }
+  const buyRate = stats.buyCnt ? (stats.buyWin / stats.buyCnt * 100).toFixed(0) : '-';
+  const sellRate = stats.sellCnt ? (stats.sellWin / stats.sellCnt * 100).toFixed(0) : '-';
+
+  document.getElementById('resultArea').innerHTML = `
+    <div class="panel">
+      <h2>下个交易日买卖点预测（${info.name || ''} ${info.symbol || ''} | 预测日: ${window.__predictDate}）</h2>
+      <div class="hint">基于最新收盘日 ${last.date} 的12大因子综合评分，正分偏多、负分偏空</div>
+      <div class="verdict">
+        <div class="verdict-badge" style="background:${verdict.color}">
+          <div class="action">${verdict.action}</div>
+          <div class="sub">${verdict.sub} | 综合评分 ${S >= 0 ? '+' : ''}${S.toFixed(1)}</div>
+        </div>
+        <div class="verdict-score">
+          <div class="score-line">
+            <span class="lab">次日上涨概率</span>
+            <div class="bar"><div class="up" style="width:${P_up}%"></div></div>
+            <span class="value up">${P_up}%</span>
+          </div>
+          <div class="score-line">
+            <span class="lab">次日下跌概率</span>
+            <div class="bar"><div class="down" style="width:${P_down}%"></div></div>
+            <span class="value down">${P_down}%</span>
+          </div>
+          <div class="score-summary">概率由12因子加权评分换算：买入概率=上涨概率，卖出概率=下跌概率；评分区间 ±100，|评分|越大信号越强</div>
+        </div>
+      </div>
+
+      <div class="timing">
+        <div class="timing-card buy">
+          <h3>建议买入时机</h3>
+          <div class="tm"><span class="k">回踩支撑</span><span class="v">${L.s1Name} ${fmtNum(L.s1)}${L.s2 ? '（下档 ' + L.s2Name + ' ' + fmtNum(L.s2) + '）' : ''}</span></div>
+          <div class="tm"><span class="k">买入区间</span><span class="v">${fmtNum(L.s2 || L.s1)} ~ ${fmtNum(Math.min(last.close, L.s1))}</span></div>
+          <div class="tm"><span class="k">突破追高</span><span class="v">放量站上 ${L.r1Name} ${fmtNum(L.r1)}</span></div>
+          <div class="advice">${S >= 15 ? '分批买入' : (S > -5 ? '仅回踩企稳后轻仓' : '暂不买入')}：每档1/3，跌破止损位离场</div>
+        </div>
+        <div class="timing-card sell">
+          <h3>建议卖出时机</h3>
+          <div class="tm"><span class="k">上方压力</span><span class="v">${L.r1Name} ${fmtNum(L.r1)}${L.r2 ? '（上档 ' + L.r2Name + ' ' + fmtNum(L.r2) + '）' : ''}</span></div>
+          <div class="tm"><span class="k">卖出区间</span><span class="v">${fmtNum(L.r1)} ~ ${fmtNum(L.r2 || Math.min(L.hi20 || L.r1 * 1.02, L.r1 * 1.05))}</span></div>
+          <div class="tm"><span class="k">止损位</span><span class="v">${fmtNum(L.s1 * 0.97)}</span></div>
+          <div class="advice">${timingAdvice(S, L)}；冲高分批止盈，收益落袋为安</div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:6px;">因子明细（${S >= 0 ? '+' : ''}${S.toFixed(1)} 分）</h2>
+      ${factorHtml}
+    </div>
+
+    <div class="panel">
+      <h2>明日走势形态预测（预测日: ${window.__predictDate}）</h2>
+      <div class="trend-head">
+        <div class="trend-badge" style="background:${trend.main.color}">
+          <div class="t-name">${trend.main.name}</div>
+          <div class="t-prob">概率 ${trend.main.prob}%</div>
+        </div>
+        <div class="trend-reasons">
+          <div class="t-sub">主预测 <strong>${trend.main.name}</strong>（${trend.main.prob}%），次选 ${trend.second.name}（${trend.second.prob}%）</div>
+          <div class="t-why">${trend.reasons.length ? trend.reasons.map(x => '· ' + x).join('<br>') : '量价动能中性，明日或以日内震荡为主'}</div>
+        </div>
+      </div>
+      <div class="trend-bars">
+        ${TREND_DEFS.map(t => `<div class="tbar">
+          <span class="tk">${t.name}</span>
+          <div class="tb"><div class="fill" style="width:${trend.probs[t.key] || 0}%; background:${t.color};"></div></div>
+          <span class="tv">${trend.probs[t.key] || 0}%</span>
+        </div>`).join('')}
+      </div>
+      <div class="hint">概率由今日量价、MACD、RSI、K线位置与影线结构推断，仅供次日操盘预案参考；保存后次日自动复盘比对实际走势形态</div>
+    </div>
+
+    <div class="panel">
+      <h2>明日操作策略（今日量能 ${adv.volScene} · MACD动能 ${adv.macdScene}）</h2>
+      <div class="strat-scene">
+        <span class="scene-chip">量能：${adv.volScene}${adv.volRatio != null ? '（量比 ' + adv.volRatio.toFixed(2) + '）' : ''}</span>
+        <span class="scene-chip">MACD：${adv.macdScene}</span>
+        <span class="scene-chip">综合评分 ${S >= 0 ? '+' : ''}${S.toFixed(1)}（${verdict.action}）</span>
+      </div>
+      <h3 class="strat-title">量能 · MACD 动能</h3>
+      <ul class="strat-list">
+        ${adv.advice.map(a => `<li>${a}</li>`).join('')}
+      </ul>
+      <h3 class="strat-title">分时预案（按明日开盘情形）</h3>
+      <ul class="strat-list">
+        ${adv.openPlans.map(p => `<li><strong>${p.k}</strong>：${p.text}</li>`).join('')}
+      </ul>
+      <h3 class="strat-title">关键价位预案</h3>
+      <ul class="strat-list">
+        ${adv.pricePlans.map(p => `<li>${p}</li>`).join('')}
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>K线与买卖信号（${rows.length}个交易日）</h2>
+      <div class="stats">
+        <div class="stat-item"><span class="k">买入信号命中率</span>：<strong class="up">${buyRate}%</strong>（${stats.buyCnt}次，5日内上涨）</div>
+        <div class="stat-item"><span class="k">卖出信号命中率</span>：<strong class="down">${sellRate}%</strong>（${stats.sellCnt}次，5日内下跌）</div>
+        <div class="stat-item"><span class="k">区间内信号</span>：买入 ${stats.buyCnt} 次 / 卖出 ${stats.sellCnt} 次</div>
+      </div>
+      <div class="chart-wrap">
+        <div class="legend">
+          <div class="legend-item"><span class="legend-color" style="background:#e8453c"></span>上涨</div>
+          <div class="legend-item"><span class="legend-color" style="background:#34a853"></span>下跌</div>
+          <div class="legend-item"><span class="legend-color" style="background:#ff9800"></span>预测</div>
+          <div class="legend-item"><span style="color:#e8453c">▲ 历史买入信号</span></div>
+          <div class="legend-item"><span style="color:#34a853">▼ 历史卖出信号</span></div>
+        </div>
+        <div class="chart-canvas-wrap"><canvas id="klineChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>历史信号明细（最近12条，5日表现）</h2>
+      <table>
+        <thead><tr><th>日期</th><th>信号</th><th>评分</th><th>当日收盘</th><th>5日后涨跌</th></tr></thead>
+        <tbody>${sigHtml}</tbody>
+      </table>
+    </div>
+  `;
+
+  drawSignalChart(rows, signals, S, verdict);
+}
+
+// ============ 预测落库与复盘 ============
+function buildPredictionPayload(rows, info) {
+  const weights = getWeights();
+  const i = rows.length - 1;
+  const res = scoreAt(rows, i, weights, info);
+  const S = res.S;
+  const verdict = verdictOf(S);
+  const P_up = clamp(Math.round(50 + S / 2), 5, 95);
+  const L = calcLevels(rows, i);
+  const last = rows[i];
+  const trend = predictTrendScores(rows, i);
+  const adv = buildStrategyAdvice(rows, i, L);
+  let actionCode = 'hold';
+  if (S >= 15) actionCode = 'buy';
+  else if (S >= 5) actionCode = 'watch_buy';
+  else if (S > -5) actionCode = 'hold';
+  else if (S > -15) actionCode = 'watch_sell';
+  else actionCode = 'sell';
+  return {
+    symbol: info.symbol, name: info.name,
+    based_date: last.date,
+    predict_date: window.__predictDate,
+    action: verdict.action, action_code: actionCode,
+    score: S, prob_up: P_up, close: last.close,
+    support_price: L.s1, support2_price: L.s2,
+    resistance_price: L.r1, resistance2_price: L.r2,
+    stop_loss: L.s1 ? Math.round(L.s1 * 0.97 * 100) / 100 : null,
+    factors: res.parts.map(p => ({ key: p.key, name: p.name, score: p.score, weight: p.weight, desc: p.desc })),
+    weights: weights,
+    trend: trend.main.key,
+    trend_probs: trend.probs,
+    trend_strategy: `主预测走势：${trend.main.name}(${trend.main.prob}%)，次选${trend.second.name}(${trend.second.prob}%)。量能${adv.volScene}、MACD动能${adv.macdScene}。`
+      + adv.advice.join('；')
+      + (adv.openPlans && adv.openPlans.length ? '。分时预案：' + adv.openPlans.map(p => p.k + '→' + p.text).join('；') : '')
+      + (adv.pricePlans && adv.pricePlans.length ? '。价位预案：' + adv.pricePlans.join('；') : ''),
+  };
+}
+
+async function savePrediction() {
+  const btn = document.getElementById('savePredBtn');
+  const statusEl = document.getElementById('saveStatus');
+  if (!window.__klineData || !window.__stockInfo) {
+    statusEl.textContent = '请先读取股票数据并运行预测';
+    statusEl.className = 'err';
+    return;
+  }
+  const payload = buildPredictionPayload(window.__klineData, window.__stockInfo);
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const res = await fetch(`${API_BASE}/api/predict/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.error) {
+      statusEl.textContent = '保存失败: ' + data.error;
+      statusEl.className = 'err';
+      return;
+    }
+    statusEl.textContent = `已保存（ID=${data.id}）：${payload.action}，次日自动复盘`;
+    statusEl.className = 'ok';
+    btn.textContent = '更新预测结论';
+    await Promise.all([loadPredictions(), loadPredStats()]);
+  } catch (e) {
+    statusEl.textContent = '保存失败: ' + e.message;
+    statusEl.className = 'err';
+  } finally {
+    btn.disabled = false;
+    if (btn.textContent === '保存中...') btn.textContent = '保存当前预测结论';
+  }
+}
+
+async function checkTodaySaved(symbol, basedDate) {
+  const btn = document.getElementById('savePredBtn');
+  const statusEl = document.getElementById('saveStatus');
+  if (!btn || !statusEl) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/predictions?symbol=${encodeURIComponent(symbol)}&limit=50`);
+    const data = await res.json();
+    const found = (data.data || []).find(p => p.based_date === basedDate);
+    if (found) {
+      statusEl.textContent = `该日预测已保存（ID=${found.id}），再次保存将覆盖更新`;
+      statusEl.className = 'ok';
+      btn.textContent = '更新预测结论';
+    } else {
+      statusEl.textContent = '运行预测完成，点右侧保存结论落库';
+      statusEl.className = 'hint';
+      btn.textContent = '保存当前预测结论';
+    }
+    btn.disabled = false;
+  } catch (e) { btn.disabled = false; }
+}
+
+async function loadPredictions() {
+  const wrap = document.getElementById('predListWrap');
+  const sel = document.getElementById('predSymbol');
+  const symbol = sel ? sel.value : '';
+  try {
+    const res = await fetch(`${API_BASE}/api/predictions${symbol ? '?symbol=' + encodeURIComponent(symbol) : ''}`);
+    const data = await res.json();
+    if (data.error) {
+      wrap.innerHTML = `<div class="error" style="display:block;">${data.error}</div>`;
+      return;
+    }
+    renderPredTable(data.data || []);
+  } catch (e) {
+    wrap.innerHTML = `<div class="error" style="display:block;">加载预测记录失败: ${e.message}</div>`;
+  }
+}
+
+function renderPredTable(rows) {
+  const wrap = document.getElementById('predListWrap');
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="hint">暂无预测记录，运行预测后点「保存当前预测结论」即可落库。</div>';
+    return;
+  }
+  const trs = rows.map(p => {
+    const hitTxt = p.hit === true ? '<span class="tag buy">命中</span>'
+      : p.hit === false ? '<span class="tag sell">未命中</span>'
+      : (p.review_date ? '<span class="tag hold">中性(观望)</span>' : '<span class="tag hold">待复盘</span>');
+    const pct = p.actual_pct == null ? null : Number(p.actual_pct);
+    const pctTxt = pct == null ? '-' : ((pct >= 0 ? '+' : '') + pct.toFixed(2) + '%');
+    const pctCls = pct == null ? '' : (pct > 0 ? 'up' : 'down');
+    const score = Number(p.score);
+    const trendTxt = p.trend ? (TREND_NAMES[p.trend] || p.trend) : '-';
+    const actualTrendTxt = p.actual_trend ? (TREND_NAMES[p.actual_trend] || p.actual_trend) : '-';
+    const trendHitTxt = p.trend_hit === true ? '<span class="tag buy">走势中</span>'
+      : p.trend_hit === false ? '<span class="tag sell">走势错</span>'
+      : (p.review_date ? '<span class="tag hold">-</span>' : '<span class="tag hold">待</span>');
+    return `<tr>
+      <td>${p.based_date}</td>
+      <td>${p.symbol}${p.name ? ' ' + p.name : ''}</td>
+      <td>${p.predict_date}</td>
+      <td>${trendTxt}</td>
+      <td>${p.action}</td>
+      <td class="${score >= 0 ? 'up' : 'down'}">${score >= 0 ? '+' : ''}${score.toFixed(1)}</td>
+      <td>${p.prob_up != null ? fmtNum(p.prob_up) + '%' : '-'}</td>
+      <td>${p.actual_close != null ? fmtNum(p.actual_close) : '-'}</td>
+      <td class="${pctCls}">${pctTxt}</td>
+      <td>${actualTrendTxt}</td>
+      <td>${trendHitTxt}</td>
+      <td>${hitTxt}</td>
+      <td>${p.review_date || '-'}</td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th>依据日</th><th>股票</th><th>目标日</th><th>预测走势</th><th>结论</th><th>评分</th><th>上涨概率</th>
+      <th>复盘收盘</th><th>实际涨跌</th><th>实际走势</th><th>走势验证</th><th>方向</th><th>复盘日</th>
+    </tr></thead>
+    <tbody>${trs}</tbody>
+  </table>`;
+}
+
+async function loadPredStats() {
+  const el = document.getElementById('predStats');
+  const sel = document.getElementById('predSymbol');
+  try {
+    const res = await fetch(`${API_BASE}/api/predictions/stats`);
+    const s = await res.json();
+    if (s.error) {
+      el.innerHTML = `<div class="error" style="display:block;">${s.error}</div>`;
+      return;
+    }
+    if (sel && sel.options.length <= 1) {
+      (s.by_symbol || []).forEach(x => {
+        const opt = document.createElement('option');
+        opt.value = x.symbol;
+        opt.textContent = `${x.symbol} ${x.name || ''}（${x.total}条）`;
+        sel.appendChild(opt);
+      });
+    }
+    const fmtRate = r => r == null ? '-' : r.toFixed(0) + '%';
+    const fmtPct = p => p == null ? '-' : ((p >= 0 ? '+' : '') + p.toFixed(2) + '%');
+    const aligned = (s.factor_aligned || []).map(f => `${f.key}(+${f.delta})`).join('、');
+    const inverted = (s.factor_inverted || []).map(f => `${f.key}(${f.delta})`).join('、');
+    // 兼容旧版服务返回（缺少新字段时不报错）
+    const tr = s.trend || { total: 0, reviewed: 0, hits: 0, hit_rate: null };
+    const buy = s.buy || { hits: 0, reviewed: 0, hit_rate: null, avg_pct: null };
+    const sell = s.sell || { hits: 0, reviewed: 0, hit_rate: null, avg_pct: null };
+    el.innerHTML = `
+      <div class="stat-chips">
+        <div class="chip"><span class="k">累计预测</span><span class="v">${s.total}</span></div>
+        <div class="chip"><span class="k">已复盘</span><span class="v">${s.reviewed}</span></div>
+        <div class="chip"><span class="k">总体命中率</span><span class="v up">${fmtRate(s.hit_rate)}</span></div>
+        <div class="chip"><span class="k">走势形态命中</span><span class="v">${fmtRate(tr.hit_rate)}（${tr.hits}/${tr.reviewed}）</span></div>
+        <div class="chip"><span class="k">买入信号命中</span><span class="v up">${fmtRate(buy.hit_rate)}（${buy.hits}/${buy.reviewed}）</span></div>
+        <div class="chip"><span class="k">卖出信号命中</span><span class="v down">${fmtRate(sell.hit_rate)}（${sell.hits}/${sell.reviewed}）</span></div>
+        <div class="chip"><span class="k">买入均收益</span><span class="v up">${fmtPct(buy.avg_pct)}</span></div>
+        <div class="chip"><span class="k">卖出均收益</span><span class="v down">${fmtPct(sell.avg_pct)}</span></div>
+      </div>
+      <div class="sugg-box"><strong>迭代总结 · 量化策略建议：</strong>${s.suggestion || '-'}</div>
+      ${(aligned || inverted) ? `<div class="factor-note">因子复盘（命中均分-未命中均分）：有效 ${aligned || '无'}；反向 ${inverted || '无'}。正分利多设计下，有效因子应上调权重，反向因子降权或反向理解。</div>` : ''}
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="error" style="display:block;">加载统计失败: ${e.message}</div>`;
+  }
+}
+
+// ============ K线图（原生Canvas，带买卖信号标记） ============
+let _klineChart = null;
+function drawSignalChart(rows, signals, S, verdict) {
+  const canvas = document.getElementById('klineChart');
+  if (!canvas) return;
+  if (_klineChart) {
+    _klineChart.canvas.onmousemove = null;
+    _klineChart.canvas.onmouseleave = null;
+    _klineChart = null;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth;
+  const cssH = canvas.parentElement.clientHeight;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // 随数据范围绘制全部K线（不再固定最近120根）
+  const data = rows;
+  const labels = data.map(r => r.date);
+
+  // 窗口内的信号（idx 为在 data 中的下标）
+  const offset = 0;
+  const markers = signals
+    .filter(sg => sg.t >= offset)
+    .map(sg => ({ x: sg.t - offset, type: sg.type, S: sg.S }));
+
+  const W = cssW, H = cssH;
+  const padL = 44, padR = 44, padT = 10, padB = 24;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  let maxP = -Infinity, minP = Infinity;
+  data.forEach(k => { maxP = Math.max(maxP, k.high); minP = Math.min(minP, k.low); });
+  const lastClose = data[data.length - 1].close;
+  maxP = Math.max(maxP, lastClose); minP = Math.min(minP, lastClose);
+  const rangeP = maxP - minP || 1;
+  maxP += rangeP * 0.08; minP -= rangeP * 0.08;
+
+  const n = data.length;
+  const slot = chartW / n;
+  const bodyW = Math.max(2, slot * 0.6);
+  const yOf = price => padT + (maxP - price) / (maxP - minP) * chartH;
+  const xOf = i => padL + slot * (i + 0.5);
+
+  let hoverIdx = -1;
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    // 网格
+    ctx.strokeStyle = '#f0f0f0'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#888'; ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const gridCount = 5;
+    for (let i = 0; i <= gridCount; i++) {
+      const price = maxP - (maxP - minP) * i / gridCount;
+      const y = padT + chartH * i / gridCount;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
+      ctx.fillText(price.toFixed(2), padL + chartW + 4, y);
+    }
+    if (hoverIdx >= 0) {
+      const hx = xOf(hoverIdx);
+      ctx.strokeStyle = '#999'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + chartH); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // K线
+    data.forEach((k, i) => {
+      const x = xOf(i);
+      const isUp = k.close >= k.open;
+      const color = isUp ? '#e8453c' : '#34a853';
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, yOf(k.high)); ctx.lineTo(x, yOf(k.low)); ctx.stroke();
+      const yOpen = yOf(k.open), yClose = yOf(k.close);
+      const bodyTop = Math.min(yOpen, yClose);
+      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+      const bw = (i === hoverIdx) ? bodyW * 1.15 : bodyW;
+      ctx.fillRect(x - bw / 2, bodyTop, bw, bodyH);
+      ctx.strokeRect(x - bw / 2, bodyTop, bw, bodyH);
+    });
+    // 信号标记
+    markers.forEach(m => {
+      const x = xOf(m.x);
+      const k = data[m.x];
+      if (m.type === 'buy') {
+        ctx.fillStyle = '#e8453c';
+        ctx.beginPath();
+        ctx.moveTo(x, yOf(k.low) + 12);
+        ctx.lineTo(x - 7, yOf(k.low) + 22);
+        ctx.lineTo(x + 7, yOf(k.low) + 22);
+        ctx.closePath(); ctx.fill();
+      } else {
+        ctx.fillStyle = '#34a853';
+        ctx.beginPath();
+        ctx.moveTo(x, yOf(k.high) - 12);
+        ctx.lineTo(x - 7, yOf(k.high) - 22);
+        ctx.lineTo(x + 7, yOf(k.high) - 22);
+        ctx.closePath(); ctx.fill();
+      }
+    });
+    // 预测标记（下一交易日，画在最右侧）
+    const px = padL + chartW + 6;
+    const py = yOf(lastClose);
+    ctx.fillStyle = '#ff9800';
+    if (S >= 0) {
+      ctx.beginPath(); ctx.moveTo(px, py + 14); ctx.lineTo(px - 7, py + 26); ctx.lineTo(px + 7, py + 26); ctx.closePath(); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.moveTo(px, py - 14); ctx.lineTo(px - 7, py - 26); ctx.lineTo(px + 7, py - 26); ctx.closePath(); ctx.fill();
+    }
+    ctx.font = 'bold 10px Consolas, monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#ff9800';
+    ctx.fillText(`${verdict.action} ${(S >= 0 ? '+' : '') + S.toFixed(0)}分`, px + 10, py);
+    // X轴标签
+    ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const labelStep = Math.max(1, Math.ceil(n / 8));
+    for (let i = 0; i < n; i += labelStep) {
+      const lb = labels[i] || '';
+      ctx.fillStyle = '#888';
+      ctx.fillText(lb.length > 5 ? lb.slice(5) : lb, xOf(i), padT + chartH + 4);
+    }
+    // tooltip
+    if (hoverIdx >= 0) drawTooltip(hoverIdx);
+  }
+
+  function drawTooltip(idx) {
+    const k = data[idx];
+    const isUp = k.close >= k.open;
+    const color = isUp ? '#e8453c' : '#34a853';
+    const rowsTip = [
+      { label: '日期', value: k.date, color: '#333' },
+      { label: '开盘', value: k.open.toFixed(2), color: color },
+      { label: '收盘', value: k.close.toFixed(2), color: color },
+      { label: '最高', value: k.high.toFixed(2), color: '#e8453c' },
+      { label: '最低', value: k.low.toFixed(2), color: '#34a853' },
+      { label: '涨跌幅', value: (k.pct_change >= 0 ? '+' : '') + k.pct_change.toFixed(2) + '%', color: color },
+      { label: '量比', value: k.volume_ratio != null ? k.volume_ratio.toFixed(2) : '-', color: '#666' },
+      { label: '主力净流入', value: k.main_net_inflow != null ? fmtWan(k.main_net_inflow) : '-', color: '#9c27b0' },
+    ];
+    const lineH = 16, padX = 10, padY = 8;
+    ctx.font = '12px Consolas, monospace';
+    let maxLw = 0, maxVw = 0;
+    rowsTip.forEach(r => { maxLw = Math.max(maxLw, ctx.measureText(r.label).width); maxVw = Math.max(maxVw, ctx.measureText(r.value).width); });
+    const boxW = maxLw + maxVw + 24;
+    const boxH = rowsTip.length * lineH + padY * 2;
+
+    const kx = xOf(idx);
+    let bx = kx + 16;
+    if (bx + boxW > W - padR) bx = kx - 16 - boxW;
+    if (bx < padL) bx = padL;
+    let by = padT + 8;
+    if (by + boxH > padT + chartH) by = padT + chartH - boxH;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.rect(bx, by, boxW, boxH); ctx.fill(); ctx.stroke();
+
+    ctx.font = '12px Consolas, monospace';
+    ctx.textBaseline = 'middle';
+    rowsTip.forEach((r, i) => {
+      const y = by + padY + i * lineH + lineH / 2;
+      ctx.fillStyle = '#888'; ctx.textAlign = 'left';
+      ctx.fillText(r.label, bx + padX, y);
+      ctx.fillStyle = r.color; ctx.textAlign = 'right';
+      ctx.fillText(r.value, bx + boxW - padX, y);
+    });
+  }
+
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx < padL || mx > padL + chartW || my < padT || my > padT + chartH) {
+      if (hoverIdx !== -1) { hoverIdx = -1; render(); }
+      return;
+    }
+    const idx = Math.floor((mx - padL) / slot);
+    if (idx >= 0 && idx < n && idx !== hoverIdx) { hoverIdx = idx; render(); }
+  };
+  canvas.onmouseleave = () => {
+    if (hoverIdx !== -1) { hoverIdx = -1; render(); }
+  };
+
+  _klineChart = { canvas };
+  render();
+}
+
+// ============ 股票数据拉取 ============
+async function fetchStock(syncFirst = false) {
+  const infoEl = document.getElementById('stockInfo');
+  const pickerEl = document.getElementById('stockPicker');
+  const picked = StockPicker.getValue(pickerEl);
+  const input = StockPicker.getInput(pickerEl);
+  if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
+
+  infoEl.textContent = syncFirst ? '正在从数据源同步最新数据（联网，可能需要一些时间）...' : '正在读取本地数据库...';
+  try {
+    let code, name;
+    if (picked) { code = picked.code; name = picked.name; }
+    else if (/^\d{6}$/.test(input)) { code = input; }
+    else {
+      const m = input.match(/[（(](\d{6})[)）]/);
+      if (m) { code = m[1]; name = input.replace(/\s*[（(]\d{6}[)）]\s*$/, '').trim(); }
+    }
+    if (!code) {
+      const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
+      const data = await res.json();
+      const list = data.data || [];
+      if (!list.length) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
+      const match = list.find(r => r.Name === input) || list[0];
+      code = match.Code; name = match.Name;
+    }
+    if (window.QueryHistory) QueryHistory.record(code, name);
+
+    const range = buildRangeParams();
+    if (syncFirst) {
+      try {
+        const syncRes = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
+        const syncData = await syncRes.json();
+        if (syncData.error) console.warn('同步失败:', syncData.error);
+      } catch (e) { console.warn('同步失败:', e); }
+    }
+
+    const url = `${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.data || data.data.length === 0) {
+      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据，请点「同步最新数据」联网拉取一次');
+      infoEl.textContent = '';
+      return;
+    }
+    name = name || data.stock?.name || code;
+    const rows = data.data.map(k => ({
+      date: k.date,
+      open: v(k.open), close: v(k.close), high: v(k.high), low: v(k.low),
+      volume: v(k.volume), amount: v(k.amount), turnover: v(k.turnover),
+      pct_change: v(k.pct_change), change: v(k.change), amplitude: v(k.amplitude),
+      volume_ratio: v(k.volume_ratio),
+      main_net_inflow: v(k.main_net_inflow), super_large_net_inflow: v(k.super_large_net_inflow),
+      large_net_inflow: v(k.large_net_inflow), medium_net_inflow: v(k.medium_net_inflow),
+      small_net_inflow: v(k.small_net_inflow),
+      macd_dif: v(k.macd_dif), macd_dea: v(k.macd_dea), macd_hist: v(k.macd_hist),
+      ma5: v(k.ma5), ma10: v(k.ma10), ma20: v(k.ma20), ma30: v(k.ma30), ma60: v(k.ma60), ma120: v(k.ma120),
+      rsi6: v(k.rsi6), rsi12: v(k.rsi12), rsi14: v(k.rsi14), rsi24: v(k.rsi24),
+      kdj_k: v(k.kdj_k), kdj_d: v(k.kdj_d), kdj_j: v(k.kdj_j),
+      bias5: v(k.bias5), bias10: v(k.bias10), bias20: v(k.bias20),
+    }));
+    if (rows.length < 60) {
+      showError(`数据仅 ${rows.length} 条，预测至少需要60个交易日，请扩大数据范围或同步最新数据`);
+      return;
+    }
+
+    // 股票基本信息（基本面因子）
+    let info = { symbol: code, name: name, industry: '', list_date: null, float_market_cap: null, total_market_cap: null };
+    try {
+      const ires = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
+      const idata = await ires.json();
+      if (!idata.error) info = { ...info, ...idata };
+    } catch (e) { console.warn('获取股票信息失败:', e); }
+
+    window.__klineData = rows;
+    window.__stockInfo = info;
+
+    const last = rows[rows.length - 1];
+    // 预测日 = 库中最新收盘日的下一个交易日（若今天行情已同步，则等于明天）
+    window.__predictDate = fmtDate(getNextTradingDay(new Date(last.date + 'T00:00:00')));
+    const mv = info.float_market_cap || info.total_market_cap;
+    const mvTxt = mv ? `${Number(mv).toFixed(0)}亿` : '-';
+    infoEl.innerHTML = `<strong style="color:#1a73e8">${name} (${code})</strong> | 行业: ${info.industry || '-'} | 流通市值: ${mvTxt} | 最新收盘 ${last.date}: ${fmtNum(last.close)} | 预测日: <strong style="color:#e8453c">${window.__predictDate}</strong> | 历史 ${rows.length} 条`;
+
+    runPrediction(rows, info);
+    checkTodaySaved(code, last.date);
+  } catch (e) {
+    const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
+      ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）' : '';
+    showError('查询失败: ' + e.message + hint);
+    infoEl.textContent = '';
+  }
+}
+
+// ============ 页面初始化 ============
+loadStockCatalog();
+initWeightGrid();
+loadPredictions();
+loadPredStats();
+(function initRangeUI() {
+  const today = new Date();
+  const halfYearAgo = new Date();
+  halfYearAgo.setDate(halfYearAgo.getDate() - 180);
+  document.getElementById('begDate').value = fmtDate(halfYearAgo);
+  document.getElementById('endDate').value = fmtDate(today);
+  updateRangeUI();
+})();
+document.addEventListener('keydown', (e) => {
+  const picker = document.getElementById('stockPicker');
+  if (e.key === 'Enter' && picker && picker.contains(e.target)) {
+    e.preventDefault();
+    fetchStock();
+  }
+});
+</script>
+</body>
+</html>

@@ -185,29 +185,7 @@
       <div class="field">
         <label>预设策略</label>
         <select id="strategySelect" onchange="updateStrategyDesc()">
-          <option value="rate">MACD变化速率信号（速率上穿0买入/下穿0卖出）</option>
-          <option value="cross">MACD金叉死叉（DIF上穿DEA买入/下穿卖出）</option>
-          <option value="bar">MACD柱红绿转换（柱由绿转红买入/由红转绿卖出）</option>
-          <option value="triple">三指标共振（MACD金叉+KDJ低位金叉+RSI上穿30）</option>
-          <option value="macdRsi">MACD主+RSI过滤（金叉且RSI<50买/RSI>70卖）</option>
-          <option value="macdKdj">MACD主+KDJ过滤（金叉且K<80买/KDJ死叉卖）</option>
-          <option value="kdjBottom">KDJ抄底+MACD趋势（KDJ低位金叉买/MACD死叉卖）</option>
-          <option value="rsiKdjBottom">RSI+KDJ双底共振（KDJ低位金叉且RSI<40买）</option>
-          <option value="kdjRsiOverSell">KDJ+RSI超卖共振（K<20且RSI<30买/K>80卖）</option>
-          <option value="rsiKdjDual">RSI+KDJ双重确认（RSI上穿30+KDJ金叉任一即买）</option>
-          <option value="kdjJ">KDJ J值极值反转（J上穿0买/下穿100卖）</option>
-          <option value="rsiDual">RSI双线（短期6日上穿长期24日买）</option>
-          <option value="rsiDivergence">RSI底背离（价创新低RSI不破前低买）</option>
-          <option value="bollBreak">布林带突破（跌破下轨回升买/突破上轨回落卖）</option>
-          <option value="bias">BIAS乖离率（负乖离过大买/正乖离过大卖）</option>
-          <option value="volBreakout">放量突破（放量突破前高买/放量跌破前低卖）</option>
-          <option value="volPullback">缩量回调（上升趋势中缩量回踩买）</option>
-          <option value="volRatio">量比异动（放量上攻买/放量下跌卖）</option>
-          <option value="obv">OBV能量潮（OBV创新高买/创新低卖）</option>
-          <option value="vwap">VWAP量价均价（收盘上穿买/下穿卖）</option>
-          <option value="volShrink">地量见地价（地量收阳买/放量收阴卖）</option>
-          <option value="volDivergence">量价背离（底背离买/顶背离卖）</option>
-          <option value="vr">VR成交量变异率（低位上穿买/高位下穿卖）</option>
+          <option value="">策略加载中...</option>
         </select>
       </div>
     </div>
@@ -395,6 +373,14 @@
             <option value="ma60Down">MA60拐头向下</option>
             <option value="both" selected>价格&lt;MA60 且 MA60拐头向下</option>
           </select>
+        </div>
+      </div>
+      <div class="row params" style="margin-top:4px">
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="enableBullBuy" checked style="width:auto">
+            多头空仓补买（金叉状态未持仓时也买入，弥补错过金叉信号）
+          </label>
         </div>
       </div>
     </div>
@@ -843,11 +829,12 @@ function calcVR(ohlc, n = 26) {
 // ma5Sell：MA5一阶下降则卖（OR）
 // aboveWaterOnly：水上（MACD柱>0）时增强卖出（快速卖出/MA5拐头）不生效，只认原策略死叉
 // buyStrength：买入信号需MACD柱≥阈值才生效（过滤弱金叉）
-function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Sell, aboveWaterOnly, buyStrength, trendFilter, volParams) {
+function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Sell, aboveWaterOnly, buyStrength, trendFilter, volParams, bullBuy) {
   const { dif, dea, macd } = macdResult;
   const n = macd.length;
   const signals = new Array(n).fill(null);
   const sellSource = new Array(n).fill(null); // 标记卖出信号来源：'orig' | 'fast' | 'ma5'
+  const blockedBuy = new Array(n).fill(false); // 标记当日被过滤器拦截不可补买（横盘/趋势/强度待确认）
   const vp = volParams || { volN: 5, volBreakN: 20, volMult: 1.5, shrinkMult: 0.5, volTrendN: 20, volRatioBuy: 2, vrN: 26, vrBuyThr: 70, vrSellThr: 150 };
   const vols = ohlc.map(k => k.volume);
   const closes = ohlc.map(k => k.close);
@@ -871,272 +858,10 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
     }
   }
 
-  // 原策略信号
-  if (strategy === 'rate') {
-    for (let i = 2; i < n; i++) {
-      const r0 = macd[i - 1] - macd[i - 2];
-      const r1 = macd[i] - macd[i - 1];
-      if (r0 <= 0 && r1 > 0) signals[i] = 'buy';
-      else if (r0 > 0 && r1 <= 0) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'cross') {
-    for (let i = 1; i < n; i++) {
-      if (dif[i - 1] <= dea[i - 1] && dif[i] > dea[i]) signals[i] = 'buy';
-      else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'bar') {
-    for (let i = 1; i < n; i++) {
-      if (macd[i - 1] <= 0 && macd[i] > 0) signals[i] = 'buy';
-      else if (macd[i - 1] > 0 && macd[i] <= 0) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'triple') {
-    // 三指标共振：MACD金叉 + KDJ低位金叉(K上穿D且K<50) + RSI上穿30，3日内窗口满足任一即买；MACD死叉卖
-    const { k: kk, d: dd } = calcKDJ(ohlc);
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    const W = 3; // 3日共振窗口
-    for (let i = 1; i < n; i++) {
-      if (rsi[i] == null) continue;
-      // 检查窗口内是否三个条件都满足过
-      let macdHit = false, kdjHit = false, rsiHit = false;
-      for (let j = Math.max(1, i - W + 1); j <= i; j++) {
-        if (dif[j - 1] <= dea[j - 1] && dif[j] > dea[j]) macdHit = true;
-        if (kk[j - 1] <= dd[j - 1] && kk[j] > dd[j] && kk[j] < 50) kdjHit = true;
-        if (rsi[j - 1] != null && rsi[j - 1] <= 30 && rsi[j] > 30) rsiHit = true;
-      }
-      // 当日必须是MACD金叉日，且窗口内三个条件都满足过
-      const isMacdCrossDay = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
-      if (isMacdCrossDay && macdHit && kdjHit && rsiHit) signals[i] = 'buy';
-      else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'macdRsi') {
-    // MACD主+RSI过滤：MACD金叉且RSI<50(未超买)才买；RSI>70或MACD死叉卖
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    for (let i = 1; i < n; i++) {
-      if (rsi[i] == null) continue;
-      const macdCross = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
-      if (macdCross && rsi[i] < 50) signals[i] = 'buy';
-      else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-      else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'macdKdj') {
-    // MACD主+KDJ过滤：MACD金叉且KDJ未超买(K<80)才买；KDJ死叉或MACD死叉卖
-    const { k: kk, d: dd } = calcKDJ(ohlc);
-    for (let i = 1; i < n; i++) {
-      const macdCross = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
-      const kdjDeadCross = kk[i - 1] > dd[i - 1] && kk[i] <= dd[i];
-      if (macdCross && kk[i] < 80) signals[i] = 'buy';
-      else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-      else if (kdjDeadCross) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'kdjBottom') {
-    // KDJ抄底+MACD趋势：KDJ低位金叉(K上穿D且K<20)买入；MACD水上(DIF>DEA)可加仓；MACD死叉全卖
-    const { k: kk, d: dd } = calcKDJ(ohlc);
-    for (let i = 1; i < n; i++) {
-      const kdjLowCross = kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 20;
-      const macdAboveWater = dif[i] > dea[i];
-      if (kdjLowCross) signals[i] = 'buy';
-      else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'rsiKdjBottom') {
-    // RSI+KDJ双底共振：KDJ低位金叉(K上穿D且K<30) 且 RSI<40(超卖区) 才买入；KDJ死叉或RSI>70卖
-    const { k: kk, d: dd } = calcKDJ(ohlc);
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    for (let i = 1; i < n; i++) {
-      if (rsi[i] == null) continue;
-      const kdjLowCross = kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 30;
-      const kdjDeadCross = kk[i - 1] > dd[i - 1] && kk[i] <= dd[i];
-      if (kdjLowCross && rsi[i] < 40) signals[i] = 'buy';
-      else if (kdjDeadCross) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-      else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'kdjRsiOverSell') {
-    // KDJ+RSI超卖共振：K<20且RSI<30同时满足当日买入；K>80或RSI>70卖出
-    const { k: kk } = calcKDJ(ohlc);
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    for (let i = 1; i < n; i++) {
-      if (rsi[i] == null) continue;
-      if (kk[i] < 20 && rsi[i] < 30) signals[i] = 'buy';
-      else if (kk[i] > 80) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-      else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'rsiKdjDual') {
-    // RSI+KDJ双重确认：3日内RSI上穿30 或 KDJ低位金叉(K<50)任一触发即买；RSI>70或KDJ死叉卖
-    const { k: kk, d: dd } = calcKDJ(ohlc);
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    const W = 3;
-    for (let i = 1; i < n; i++) {
-      if (rsi[i] == null) continue;
-      let rsiHit = false, kdjHit = false;
-      for (let j = Math.max(1, i - W + 1); j <= i; j++) {
-        if (rsi[j - 1] != null && rsi[j - 1] <= 30 && rsi[j] > 30) rsiHit = true;
-        if (kk[j - 1] <= dd[j - 1] && kk[j] > dd[j] && kk[j] < 50) kdjHit = true;
-      }
-      if (rsiHit || kdjHit) signals[i] = 'buy';
-      else if (kk[i - 1] > dd[i - 1] && kk[i] <= dd[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-      else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'kdjJ') {
-    // KDJ J值极值反转：J从<0上穿0轴买入（超卖反转）；J从>100下穿100轴卖出（超买反转）
-    const { j: jj } = calcKDJ(ohlc);
-    for (let i = 1; i < n; i++) {
-      if (jj[i - 1] <= 0 && jj[i] > 0) signals[i] = 'buy';
-      else if (jj[i - 1] >= 100 && jj[i] < 100) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'rsiDual') {
-    // RSI双线：短期RSI(6)上穿长期RSI(24)买入；短期下穿长期卖出
-    const rsiShort = calcRSI(ohlc.map(x => x.close), 6);
-    const rsiLong = calcRSI(ohlc.map(x => x.close), 24);
-    for (let i = 1; i < n; i++) {
-      if (rsiShort[i] == null || rsiLong[i] == null) continue;
-      if (rsiShort[i - 1] <= rsiLong[i - 1] && rsiShort[i] > rsiLong[i]) signals[i] = 'buy';
-      else if (rsiShort[i - 1] > rsiLong[i - 1] && rsiShort[i] <= rsiLong[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'rsiDivergence') {
-    // RSI底背离/顶背离：以30日为窗口，价创新低但RSI未破前低→底背离买；价创新高但RSI未破前高→顶背离卖
-    const rsi = calcRSI(ohlc.map(x => x.close));
-    const W = 30;
-    for (let i = W; i < n; i++) {
-      if (rsi[i] == null) continue;
-      // 在窗口内找前一个低点（局部最低收盘价）
-      let prevLowIdx = -1, prevLowVal = Infinity;
-      for (let j = i - W; j < i - 5; j++) {
-        if (j < 0) continue;
-        if (ohlc[j].close < prevLowVal) { prevLowVal = ohlc[j].close; prevLowIdx = j; }
-      }
-      const curLow = ohlc[i].close;
-      // 底背离：当前价更低，但RSI更高
-      if (prevLowIdx >= 0 && rsi[prevLowIdx] != null && curLow < prevLowVal && rsi[i] > rsi[prevLowIdx]) {
-        signals[i] = 'buy';
-      }
-      // 顶背离：当前价更高，但RSI更低
-      let prevHighIdx = -1, prevHighVal = -Infinity;
-      for (let j = i - W; j < i - 5; j++) {
-        if (j < 0) continue;
-        if (ohlc[j].close > prevHighVal) { prevHighVal = ohlc[j].close; prevHighIdx = j; }
-      }
-      const curHigh = ohlc[i].close;
-      if (prevHighIdx >= 0 && rsi[prevHighIdx] != null && curHigh > prevHighVal && rsi[i] < rsi[prevHighIdx]) {
-        signals[i] = 'sell'; sellSource[i] = 'orig';
-      }
-    }
-  } else if (strategy === 'bollBreak') {
-    // 布林带突破：前日收盘<下轨且当日收盘>下轨（跌破后回升）买入；前日收盘>上轨且当日收盘<上轨（突破后回落）卖出
-    const closes = ohlc.map(x => x.close);
-    const { upper, lower } = calcBOLL(closes);
-    for (let i = 1; i < n; i++) {
-      if (upper[i] == null || lower[i] == null || upper[i - 1] == null || lower[i - 1] == null) continue;
-      // 跌破下轨后回升
-      if (closes[i - 1] < lower[i - 1] && closes[i] > lower[i]) signals[i] = 'buy';
-      // 突破上轨后回落
-      else if (closes[i - 1] > upper[i - 1] && closes[i] < upper[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'bias') {
-    // BIAS乖离率：BIAS(6) < -5%（超卖）买入；BIAS(6) > 5%（超买）卖出
-    const bias = calcBIAS(ohlc.map(x => x.close), 6);
-    for (let i = 1; i < n; i++) {
-      if (bias[i] == null) continue;
-      if (bias[i] < -5) signals[i] = 'buy';
-      else if (bias[i] > 5) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'volBreakout') {
-    // 放量突破：收盘放量突破前N日最高价买入；放量跌破前N日最低价卖出
-    const volMA = calcMA(vols, vp.volN);
-    for (let i = 1; i < n; i++) {
-      if (volMA[i] == null) continue;
-      let hi = -Infinity, lo = Infinity;
-      for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
-        if (ohlc[j].high > hi) hi = ohlc[j].high;
-        if (ohlc[j].low < lo) lo = ohlc[j].low;
-      }
-      const expand = ohlc[i].volume > vp.volMult * volMA[i];
-      if (expand && ohlc[i].close > hi) signals[i] = 'buy';
-      else if (expand && ohlc[i].close < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'volPullback') {
-    // 缩量回调：上升趋势(收盘>趋势均线) + 回调(收盘<MA5) + 缩量(量<N日均量×阈值)买入；放量收阴或跌破趋势均线卖出
-    const volMA = calcMA(vols, vp.volN);
-    const ma5 = calcMA(closes, 5);
-    const maTrend = calcMA(closes, vp.volTrendN);
-    for (let i = 1; i < n; i++) {
-      if (volMA[i] == null || ma5[i] == null || maTrend[i] == null) continue;
-      const upTrend = closes[i] > maTrend[i];
-      const pullback = closes[i] < ma5[i];
-      const shrink = ohlc[i].volume < vp.shrinkMult * volMA[i];
-      const expandBear = ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open;
-      if (upTrend && pullback && shrink) signals[i] = 'buy';
-      else if (expandBear || closes[i] < maTrend[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'volRatio') {
-    // 量比异动：量比≥阈值时，放量收阳买入；放量收阴卖出（量比优先用库中较前日量，缺失则用今日量/昨日量）
-    for (let i = 1; i < n; i++) {
-      if (ohlc[i].volume <= 0) continue;
-      const vr = ohlc[i].volumeRatio != null
-        ? ohlc[i].volumeRatio
-        : (ohlc[i - 1].volume > 0 ? ohlc[i].volume / ohlc[i - 1].volume : 0);
-      if (vr < vp.volRatioBuy) continue;
-      if (ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
-      else if (ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'obv') {
-    // OBV能量潮：OBV 创前N日新高买入；创前N日新低卖出
-    const obv = calcOBV(ohlc);
-    for (let i = 1; i < n; i++) {
-      let hi = -Infinity, lo = Infinity;
-      for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
-        if (obv[j] > hi) hi = obv[j];
-        if (obv[j] < lo) lo = obv[j];
-      }
-      if (obv[i] > hi) signals[i] = 'buy';
-      else if (obv[i] < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'vwap') {
-    // VWAP成交量加权均价：累计(收盘×量)/(累计量)，收盘上穿VWAP买入；下穿卖出
-    let cumPV = 0, cumV = 0;
-    for (let i = 0; i < n; i++) {
-      cumPV += closes[i] * vols[i];
-      cumV += vols[i];
-      if (i === 0) continue;
-      const prevPV = cumPV - closes[i] * vols[i];
-      const prevV = cumV - vols[i];
-      if (prevV <= 0) continue;
-      const vwap = cumPV / cumV;
-      const vwapPrev = prevPV / prevV;
-      if (closes[i - 1] <= vwapPrev && closes[i] > vwap) signals[i] = 'buy';
-      else if (closes[i - 1] >= vwapPrev && closes[i] < vwap) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'volShrink') {
-    // 地量见地价：成交量<均量×阈值（地量）且收阳买入；放量收阴卖出
-    const volMA = calcMA(vols, vp.volN);
-    for (let i = 1; i < n; i++) {
-      if (volMA[i] == null) continue;
-      const lowVol = ohlc[i].volume < vp.shrinkMult * volMA[i];
-      if (lowVol && ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
-      else if (ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'volDivergence') {
-    // 量价背离：价创前N日新低但量未创新低（底背离，缩量见底前兆）买入；价创前N日新高但量未创新高（顶背离）卖出
-    const W = vp.volBreakN;
-    for (let i = W; i < n; i++) {
-      let minClose = Infinity, maxClose = -Infinity, minVol = Infinity, maxVol = -Infinity;
-      for (let j = i - W; j < i; j++) {
-        if (ohlc[j].close < minClose) minClose = ohlc[j].close;
-        if (ohlc[j].close > maxClose) maxClose = ohlc[j].close;
-        if (ohlc[j].volume < minVol) minVol = ohlc[j].volume;
-        if (ohlc[j].volume > maxVol) maxVol = ohlc[j].volume;
-      }
-      // 底背离：价创新低但量未同步创新低（有资金承接）
-      if (ohlc[i].close < minClose && ohlc[i].volume > minVol) signals[i] = 'buy';
-      // 顶背离：价创新高但量未同步放大（动能衰竭）
-      else if (ohlc[i].close > maxClose && ohlc[i].volume < maxVol) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
-  } else if (strategy === 'vr') {
-    // VR成交量变异率：VR从低位区上穿（超卖回升）买入；从高位区下穿（超买回落）卖出
-    const vr = calcVR(ohlc, vp.vrN);
-    for (let i = 1; i < n; i++) {
-      if (vr[i] == null || vr[i - 1] == null) continue;
-      if (vr[i - 1] <= vp.vrBuyThr && vr[i] > vp.vrBuyThr) signals[i] = 'buy';
-      else if (vr[i - 1] >= vp.vrSellThr && vr[i] < vp.vrSellThr) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
-    }
+  // 原策略信号：按策略类型分发到独立的策略函数
+  const handler = STRATEGY_HANDLERS[strategy];
+  if (handler) {
+    handler({ dif, dea, macd, n, signals, sellSource, ohlc, vols, closes, vp });
   }
 
   // 快速下跌卖出：MACD一阶速率 < 负阈值即产生卖出信号
@@ -1180,6 +905,7 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
           // 柱长不足，取消本次买入，进入待确认状态
           signals[i] = null;
           pending = true;
+          blockedBuy[i] = true;
         }
       } else if (pending) {
         // 待确认期间：检查是否达标或死叉
@@ -1190,6 +916,9 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
         } else if (signals[i] === 'sell') {
           // 未达标前出现卖出信号（死叉），取消待确认
           pending = false;
+        } else {
+          // 未达标且非死叉：待确认期间禁止补买
+          blockedBuy[i] = true;
         }
         // 注：待确认期间的卖出信号保留，因为若死叉则取消买入资格，死叉本身也不该卖（没仓位）
         // 但若死叉又快速金叉，会重新触发上面的buy逻辑
@@ -1197,9 +926,10 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
     }
   }
 
-  // 横盘过滤：仅过滤买入信号
+  // 横盘过滤：仅过滤买入信号（横盘期间整体禁止买入/补买）
   if (flatFilter && flatFilter.enabled) {
     for (let i = 0; i < n; i++) {
+      if (isFlat[i]) blockedBuy[i] = true;
       if (signals[i] === 'buy' && isFlat[i]) signals[i] = null;
     }
   }
@@ -1247,6 +977,7 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
           // 趋势向下，取消本次买入，进入待补买状态
           signals[i] = null;
           pending = true;
+          blockedBuy[i] = true;
         }
       } else if (pending) {
         // 待补买期间：检查趋势是否转好且仍金叉
@@ -1258,14 +989,397 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
         } else if (!stillGolden) {
           // 期间死叉，取消待补买
           pending = false;
+        } else {
+          // 趋势仍向下且未死叉，继续等待（期间禁止补买）
+          blockedBuy[i] = true;
         }
-        // 趋势仍向下且未死叉，继续等待
+      }
+    }
+  }
+
+  // 多头空仓补买：金叉状态(DIF>DEA)当日无信号且未被过滤器拦截时，标记补买信号，
+  // 解决错过金叉信号（如回测起点已处于多头）后整段多头期间空仓不买的问题；
+  // 引擎仅在未持仓时执行该信号，不会造成多头期间连续加仓。
+  // 仅对以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略生效，避免误作用于量能/RSI/BOLL 等策略
+  if (bullBuy && BULL_BUY_STRATEGIES.has(strategy)) {
+    for (let i = 0; i < n; i++) {
+      if (!signals[i] && !blockedBuy[i] && dif[i] > dea[i]) {
+        signals[i] = 'buyBull';
       }
     }
   }
 
   return signals;
 }
+
+// ============ 各策略信号生成（独立函数，由 generateSignals 按 strategy 分发） ============
+// 每个函数通过 ctx 共享 { dif, dea, macd, n, signals, sellSource, ohlc, vols, closes, vp }
+
+// 策略：MACD速率——MACD柱速率由负转正买入，正转负卖出
+function signalRate(ctx) {
+  const { macd, n, signals, sellSource } = ctx;
+  for (let i = 2; i < n; i++) {
+    const r0 = macd[i - 1] - macd[i - 2];
+    const r1 = macd[i] - macd[i - 1];
+    if (r0 <= 0 && r1 > 0) signals[i] = 'buy';
+    else if (r0 > 0 && r1 <= 0) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：MACD金叉——DIF上穿DEA买入，死叉卖出
+function signalCross(ctx) {
+  const { dif, dea, n, signals, sellSource } = ctx;
+  for (let i = 1; i < n; i++) {
+    if (dif[i - 1] <= dea[i - 1] && dif[i] > dea[i]) signals[i] = 'buy';
+    else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：MACD柱——红柱由无到有买入，红柱转绿卖出
+function signalBar(ctx) {
+  const { macd, n, signals, sellSource } = ctx;
+  for (let i = 1; i < n; i++) {
+    if (macd[i - 1] <= 0 && macd[i] > 0) signals[i] = 'buy';
+    else if (macd[i - 1] > 0 && macd[i] <= 0) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：三指标共振——MACD金叉 + KDJ低位金叉(K上穿D且K<50) + RSI上穿30，3日内窗口满足任一即买；MACD死叉卖
+function signalTriple(ctx) {
+  const { dif, dea, n, signals, sellSource, ohlc } = ctx;
+  const { k: kk, d: dd } = calcKDJ(ohlc);
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  const W = 3; // 3日共振窗口
+  for (let i = 1; i < n; i++) {
+    if (rsi[i] == null) continue;
+    // 检查窗口内是否三个条件都满足过
+    let macdHit = false, kdjHit = false, rsiHit = false;
+    for (let j = Math.max(1, i - W + 1); j <= i; j++) {
+      if (dif[j - 1] <= dea[j - 1] && dif[j] > dea[j]) macdHit = true;
+      if (kk[j - 1] <= dd[j - 1] && kk[j] > dd[j] && kk[j] < 50) kdjHit = true;
+      if (rsi[j - 1] != null && rsi[j - 1] <= 30 && rsi[j] > 30) rsiHit = true;
+    }
+    // 当日必须是MACD金叉日，且窗口内三个条件都满足过
+    const isMacdCrossDay = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
+    if (isMacdCrossDay && macdHit && kdjHit && rsiHit) signals[i] = 'buy';
+    else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：MACD主+RSI过滤——MACD金叉且RSI<50(未超买)才买；RSI>70或MACD死叉卖
+function signalMacdRsi(ctx) {
+  const { dif, dea, n, signals, sellSource, ohlc } = ctx;
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  for (let i = 1; i < n; i++) {
+    if (rsi[i] == null) continue;
+    const macdCross = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
+    if (macdCross && rsi[i] < 50) signals[i] = 'buy';
+    else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：MACD主+KDJ过滤——MACD金叉且KDJ未超买(K<80)才买；KDJ死叉或MACD死叉卖
+function signalMacdKdj(ctx) {
+  const { dif, dea, n, signals, sellSource, ohlc } = ctx;
+  const { k: kk, d: dd } = calcKDJ(ohlc);
+  for (let i = 1; i < n; i++) {
+    const macdCross = dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
+    const kdjDeadCross = kk[i - 1] > dd[i - 1] && kk[i] <= dd[i];
+    if (macdCross && kk[i] < 80) signals[i] = 'buy';
+    else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    else if (kdjDeadCross) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：KDJ抄底+MACD趋势——KDJ低位金叉(K上穿D且K<20)买入；MACD水上(DIF>DEA)可加仓；MACD死叉全卖
+function signalKdjBottom(ctx) {
+  const { dif, dea, n, signals, sellSource, ohlc } = ctx;
+  const { k: kk, d: dd } = calcKDJ(ohlc);
+  for (let i = 1; i < n; i++) {
+    const kdjLowCross = kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 20;
+    const macdAboveWater = dif[i] > dea[i];
+    if (kdjLowCross) signals[i] = 'buy';
+    else if (dif[i - 1] > dea[i - 1] && dif[i] <= dea[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：RSI+KDJ双底共振——KDJ低位金叉(K上穿D且K<30) 且 RSI<40(超卖区) 才买入；KDJ死叉或RSI>70卖
+function signalRsiKdjBottom(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const { k: kk, d: dd } = calcKDJ(ohlc);
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  for (let i = 1; i < n; i++) {
+    if (rsi[i] == null) continue;
+    const kdjLowCross = kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 30;
+    const kdjDeadCross = kk[i - 1] > dd[i - 1] && kk[i] <= dd[i];
+    if (kdjLowCross && rsi[i] < 40) signals[i] = 'buy';
+    else if (kdjDeadCross) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：KDJ+RSI超卖共振——K<20且RSI<30同时满足当日买入；K>80或RSI>70卖出
+function signalKdjRsiOverSell(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const { k: kk } = calcKDJ(ohlc);
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  for (let i = 1; i < n; i++) {
+    if (rsi[i] == null) continue;
+    if (kk[i] < 20 && rsi[i] < 30) signals[i] = 'buy';
+    else if (kk[i] > 80) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：RSI+KDJ双重确认——3日内RSI上穿30 或 KDJ低位金叉(K<50)任一触发即买；RSI>70或KDJ死叉卖
+function signalRsiKdjDual(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const { k: kk, d: dd } = calcKDJ(ohlc);
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  const W = 3;
+  for (let i = 1; i < n; i++) {
+    if (rsi[i] == null) continue;
+    let rsiHit = false, kdjHit = false;
+    for (let j = Math.max(1, i - W + 1); j <= i; j++) {
+      if (rsi[j - 1] != null && rsi[j - 1] <= 30 && rsi[j] > 30) rsiHit = true;
+      if (kk[j - 1] <= dd[j - 1] && kk[j] > dd[j] && kk[j] < 50) kdjHit = true;
+    }
+    if (rsiHit || kdjHit) signals[i] = 'buy';
+    else if (kk[i - 1] > dd[i - 1] && kk[i] <= dd[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+    else if (rsi[i - 1] != null && rsi[i - 1] <= 70 && rsi[i] > 70) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：KDJ J值极值反转——J从<0上穿0轴买入（超卖反转）；J从>100下穿100轴卖出（超买反转）
+function signalKdjJ(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const { j: jj } = calcKDJ(ohlc);
+  for (let i = 1; i < n; i++) {
+    if (jj[i - 1] <= 0 && jj[i] > 0) signals[i] = 'buy';
+    else if (jj[i - 1] >= 100 && jj[i] < 100) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：RSI双线——短期RSI(6)上穿长期RSI(24)买入；短期下穿长期卖出
+function signalRsiDual(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const rsiShort = calcRSI(ohlc.map(x => x.close), 6);
+  const rsiLong = calcRSI(ohlc.map(x => x.close), 24);
+  for (let i = 1; i < n; i++) {
+    if (rsiShort[i] == null || rsiLong[i] == null) continue;
+    if (rsiShort[i - 1] <= rsiLong[i - 1] && rsiShort[i] > rsiLong[i]) signals[i] = 'buy';
+    else if (rsiShort[i - 1] > rsiLong[i - 1] && rsiShort[i] <= rsiLong[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：RSI底背离/顶背离——以30日为窗口，价创新低但RSI未破前低→底背离买；价创新高但RSI未破前高→顶背离卖
+function signalRsiDivergence(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const rsi = calcRSI(ohlc.map(x => x.close));
+  const W = 30;
+  for (let i = W; i < n; i++) {
+    if (rsi[i] == null) continue;
+    // 在窗口内找前一个低点（局部最低收盘价）
+    let prevLowIdx = -1, prevLowVal = Infinity;
+    for (let j = i - W; j < i - 5; j++) {
+      if (j < 0) continue;
+      if (ohlc[j].close < prevLowVal) { prevLowVal = ohlc[j].close; prevLowIdx = j; }
+    }
+    const curLow = ohlc[i].close;
+    // 底背离：当前价更低，但RSI更高
+    if (prevLowIdx >= 0 && rsi[prevLowIdx] != null && curLow < prevLowVal && rsi[i] > rsi[prevLowIdx]) {
+      signals[i] = 'buy';
+    }
+    // 顶背离：当前价更高，但RSI更低
+    let prevHighIdx = -1, prevHighVal = -Infinity;
+    for (let j = i - W; j < i - 5; j++) {
+      if (j < 0) continue;
+      if (ohlc[j].close > prevHighVal) { prevHighVal = ohlc[j].close; prevHighIdx = j; }
+    }
+    const curHigh = ohlc[i].close;
+    if (prevHighIdx >= 0 && rsi[prevHighIdx] != null && curHigh > prevHighVal && rsi[i] < rsi[prevHighIdx]) {
+      signals[i] = 'sell'; sellSource[i] = 'orig';
+    }
+  }
+}
+
+// 策略：布林带突破——前日收盘<下轨且当日收盘>下轨（跌破后回升）买入；前日收盘>上轨且当日收盘<上轨（突破后回落）卖出
+function signalBollBreak(ctx) {
+  const { n, signals, sellSource, closes } = ctx;
+  const { upper, lower } = calcBOLL(closes);
+  for (let i = 1; i < n; i++) {
+    if (upper[i] == null || lower[i] == null || upper[i - 1] == null || lower[i - 1] == null) continue;
+    // 跌破下轨后回升
+    if (closes[i - 1] < lower[i - 1] && closes[i] > lower[i]) signals[i] = 'buy';
+    // 突破上轨后回落
+    else if (closes[i - 1] > upper[i - 1] && closes[i] < upper[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：BIAS乖离率——BIAS(6) < -5%（超卖）买入；BIAS(6) > 5%（超买）卖出
+function signalBias(ctx) {
+  const { n, signals, sellSource, closes } = ctx;
+  const bias = calcBIAS(closes, 6);
+  for (let i = 1; i < n; i++) {
+    if (bias[i] == null) continue;
+    if (bias[i] < -5) signals[i] = 'buy';
+    else if (bias[i] > 5) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：放量突破——收盘放量突破前N日最高价买入；放量跌破前N日最低价卖出
+function signalVolBreakout(ctx) {
+  const { n, signals, sellSource, ohlc, vols, vp } = ctx;
+  const volMA = calcMA(vols, vp.volN);
+  for (let i = 1; i < n; i++) {
+    if (volMA[i] == null) continue;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
+      if (ohlc[j].high > hi) hi = ohlc[j].high;
+      if (ohlc[j].low < lo) lo = ohlc[j].low;
+    }
+    const expand = ohlc[i].volume > vp.volMult * volMA[i];
+    if (expand && ohlc[i].close > hi) signals[i] = 'buy';
+    else if (expand && ohlc[i].close < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：缩量回调——上升趋势(收盘>趋势均线) + 回调(收盘<MA5) + 缩量(量<N日均量×阈值)买入；放量收阴或跌破趋势均线卖出
+function signalVolPullback(ctx) {
+  const { n, signals, sellSource, ohlc, vols, closes, vp } = ctx;
+  const volMA = calcMA(vols, vp.volN);
+  const ma5 = calcMA(closes, 5);
+  const maTrend = calcMA(closes, vp.volTrendN);
+  for (let i = 1; i < n; i++) {
+    if (volMA[i] == null || ma5[i] == null || maTrend[i] == null) continue;
+    const upTrend = closes[i] > maTrend[i];
+    const pullback = closes[i] < ma5[i];
+    const shrink = ohlc[i].volume < vp.shrinkMult * volMA[i];
+    const expandBear = ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open;
+    if (upTrend && pullback && shrink) signals[i] = 'buy';
+    else if (expandBear || closes[i] < maTrend[i]) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：量比异动——量比≥阈值时，放量收阳买入；放量收阴卖出（量比优先用库中较前日量，缺失则用今日量/昨日量）
+function signalVolRatio(ctx) {
+  const { n, signals, sellSource, ohlc, vp } = ctx;
+  for (let i = 1; i < n; i++) {
+    if (ohlc[i].volume <= 0) continue;
+    const vr = ohlc[i].volumeRatio != null
+      ? ohlc[i].volumeRatio
+      : (ohlc[i - 1].volume > 0 ? ohlc[i].volume / ohlc[i - 1].volume : 0);
+    if (vr < vp.volRatioBuy) continue;
+    if (ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
+    else if (ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：OBV能量潮——OBV 创前N日新高买入；创前N日新低卖出
+function signalObv(ctx) {
+  const { n, signals, sellSource, ohlc, vp } = ctx;
+  const obv = calcOBV(ohlc);
+  for (let i = 1; i < n; i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = Math.max(0, i - vp.volBreakN); j < i; j++) {
+      if (obv[j] > hi) hi = obv[j];
+      if (obv[j] < lo) lo = obv[j];
+    }
+    if (obv[i] > hi) signals[i] = 'buy';
+    else if (obv[i] < lo) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：VWAP成交量加权均价——累计(收盘×量)/(累计量)，收盘上穿VWAP买入；下穿卖出
+function signalVwap(ctx) {
+  const { n, signals, sellSource, closes, vols } = ctx;
+  let cumPV = 0, cumV = 0;
+  for (let i = 0; i < n; i++) {
+    cumPV += closes[i] * vols[i];
+    cumV += vols[i];
+    if (i === 0) continue;
+    const prevPV = cumPV - closes[i] * vols[i];
+    const prevV = cumV - vols[i];
+    if (prevV <= 0) continue;
+    const vwap = cumPV / cumV;
+    const vwapPrev = prevPV / prevV;
+    if (closes[i - 1] <= vwapPrev && closes[i] > vwap) signals[i] = 'buy';
+    else if (closes[i - 1] >= vwapPrev && closes[i] < vwap) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：地量见地价——成交量<均量×阈值（地量）且收阳买入；放量收阴卖出
+function signalVolShrink(ctx) {
+  const { n, signals, sellSource, ohlc, vols, vp } = ctx;
+  const volMA = calcMA(vols, vp.volN);
+  for (let i = 1; i < n; i++) {
+    if (volMA[i] == null) continue;
+    const lowVol = ohlc[i].volume < vp.shrinkMult * volMA[i];
+    if (lowVol && ohlc[i].close > ohlc[i].open) signals[i] = 'buy';
+    else if (ohlc[i].volume > vp.volMult * volMA[i] && ohlc[i].close < ohlc[i].open) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：量价背离——价创前N日新低但量未创新低（底背离，缩量见底前兆）买入；价创前N日新高但量未创新高（顶背离）卖出
+function signalVolDivergence(ctx) {
+  const { n, signals, sellSource, ohlc, vp } = ctx;
+  const W = vp.volBreakN;
+  for (let i = W; i < n; i++) {
+    let minClose = Infinity, maxClose = -Infinity, minVol = Infinity, maxVol = -Infinity;
+    for (let j = i - W; j < i; j++) {
+      if (ohlc[j].close < minClose) minClose = ohlc[j].close;
+      if (ohlc[j].close > maxClose) maxClose = ohlc[j].close;
+      if (ohlc[j].volume < minVol) minVol = ohlc[j].volume;
+      if (ohlc[j].volume > maxVol) maxVol = ohlc[j].volume;
+    }
+    // 底背离：价创新低但量未同步创新低（有资金承接）
+    if (ohlc[i].close < minClose && ohlc[i].volume > minVol) signals[i] = 'buy';
+    // 顶背离：价创新高但量未同步放大（动能衰竭）
+    else if (ohlc[i].close > maxClose && ohlc[i].volume < maxVol) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略：VR成交量变异率——VR从低位区上穿（超卖回升）买入；从高位区下穿（超买回落）卖出
+function signalVr(ctx) {
+  const { n, signals, sellSource, ohlc, vp } = ctx;
+  const vr = calcVR(ohlc, vp.vrN);
+  for (let i = 1; i < n; i++) {
+    if (vr[i] == null || vr[i - 1] == null) continue;
+    if (vr[i - 1] <= vp.vrBuyThr && vr[i] > vp.vrBuyThr) signals[i] = 'buy';
+    else if (vr[i - 1] >= vp.vrSellThr && vr[i] < vp.vrSellThr) { signals[i] = 'sell'; sellSource[i] = 'orig'; }
+  }
+}
+
+// 策略分发表：strategy 字符串 → 对应的信号生成函数
+const STRATEGY_HANDLERS = {
+  rate: signalRate,
+  cross: signalCross,
+  bar: signalBar,
+  triple: signalTriple,
+  macdRsi: signalMacdRsi,
+  macdKdj: signalMacdKdj,
+  kdjBottom: signalKdjBottom,
+  rsiKdjBottom: signalRsiKdjBottom,
+  kdjRsiOverSell: signalKdjRsiOverSell,
+  rsiKdjDual: signalRsiKdjDual,
+  kdjJ: signalKdjJ,
+  rsiDual: signalRsiDual,
+  rsiDivergence: signalRsiDivergence,
+  bollBreak: signalBollBreak,
+  bias: signalBias,
+  volBreakout: signalVolBreakout,
+  volPullback: signalVolPullback,
+  volRatio: signalVolRatio,
+  obv: signalObv,
+  vwap: signalVwap,
+  volShrink: signalVolShrink,
+  volDivergence: signalVolDivergence,
+  vr: signalVr
+};
+
+// 多头空仓补买适用的策略：以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略
+const BULL_BUY_STRATEGIES = new Set(['cross', 'triple', 'macdRsi', 'macdKdj', 'kdjBottom']);
 
 // ============ 手续费计算 ============
 // 买入：佣金 + 过户费；卖出：佣金 + 印花税 + 过户费
@@ -1412,7 +1526,9 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
 
     // 2. 检查策略信号（基于当日收盘MACD，收盘价执行）
     const sig = signals[i];
-    if (sig === 'buy' && (shares === 0 || (shares > 0 && adds < maxAdds))) {
+    // buyBull：多头空仓补买信号，仅在未持仓时执行建仓，不参与加仓
+    const isBuy = sig === 'buy' || (sig === 'buyBull' && shares === 0);
+    if (isBuy && (shares === 0 || (shares > 0 && adds < maxAdds))) {
       // 买入需预留手续费：估算佣金+过户费，避免资金不足
       const useCash = cash * positionRatio;
       if (useCash > 0) {
@@ -1439,7 +1555,7 @@ function runBacktestEngine(ohlc, macdResult, signals, params) {
             cycle.buyAmount += totalCost;
             cycle.buyGross += gross;
             cycle.buyShares += buyShares;
-            const reason = adds === 1 ? '首次建仓' : `加仓${adds - 1}`;
+            const reason = sig === 'buyBull' ? '多头补买' : (adds === 1 ? '首次建仓' : `加仓${adds - 1}`);
             trades.push({ idx: i, date: k.date, type: 'buy', price: close, shares: buyShares, amount: gross, fee: fee.total, cashAfter: cash, reason });
           }
         }
@@ -1519,7 +1635,139 @@ function calcMetrics(ohlc, result) {
 // ============ K线绘制（带买卖点标记） ============
 const klineCharts = {};
 
-function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, instanceKey = 'bt') {
+// ============ 策略 → 副图指标映射 ============
+// 副图描述：{ title, fixed:[min,max]固定Y域, zero:画0轴, refs:[{v,color}]参考线,
+//            bars:{data,pos,neg}柱状, lines:[{data,color,name}]折线 }
+function buildIndicators(strategy, ohlc, macdResult, sp) {
+  const closes = ohlc.map(k => k.close);
+  const vols = ohlc.map(k => k.volume);
+
+  // MACD 副图（优先用数据库预计算值）
+  const macd = {
+    title: 'MACD', zero: true,
+    bars: { data: macdResult.macd || [], pos: '#e8453c', neg: '#34a853' },
+    lines: [
+      { data: macdResult.dif || [], color: '#1a73e8', name: 'DIF' },
+      { data: macdResult.dea || [], color: '#ff9800', name: 'DEA' }
+    ]
+  };
+  // RSI 副图（单线）
+  const rsi = {
+    title: 'RSI', fixed: [0, 100],
+    refs: [{ v: 70, color: '#e8453c' }, { v: 50, color: '#bbb' }, { v: 30, color: '#34a853' }],
+    lines: [{ data: calcRSI(closes), color: '#8e44ad', name: 'RSI' }]
+  };
+  // RSI 双线（RSI6/RSI24）
+  const rsiDual = {
+    title: 'RSI', fixed: [0, 100],
+    refs: [{ v: 70, color: '#e8453c' }, { v: 50, color: '#bbb' }, { v: 30, color: '#34a853' }],
+    lines: [
+      { data: calcRSI(closes, 6), color: '#8e44ad', name: 'RSI6' },
+      { data: calcRSI(closes, 24), color: '#1a73e8', name: 'RSI24' }
+    ]
+  };
+  // KDJ 副图（K/D/J 三线）
+  const kdjObj = calcKDJ(ohlc);
+  const kdj = {
+    title: 'KDJ', fixed: [0, 100],
+    refs: [{ v: 80, color: '#e8453c' }, { v: 50, color: '#bbb' }, { v: 20, color: '#34a853' }],
+    lines: [
+      { data: kdjObj.k, color: '#1a73e8', name: 'K' },
+      { data: kdjObj.d, color: '#ff9800', name: 'D' },
+      { data: kdjObj.j, color: '#8e44ad', name: 'J' }
+    ]
+  };
+  // OBV 副图
+  const obv = {
+    title: 'OBV', zero: true,
+    lines: [{ data: calcOBV(ohlc), color: '#1a73e8', name: 'OBV' }]
+  };
+  // VR 副图
+  const vr = {
+    title: 'VR', zero: true,
+    refs: [
+      { v: sp.volParams.vrBuyThr, color: '#34a853' },
+      { v: sp.volParams.vrSellThr, color: '#e8453c' }
+    ],
+    lines: [{ data: calcVR(ohlc, sp.volParams.vrN), color: '#8e44ad', name: 'VR' }]
+  };
+  // BIAS 副图
+  const bias = {
+    title: 'BIAS', zero: true,
+    refs: [{ v: 5, color: '#e8453c' }, { v: -5, color: '#34a853' }],
+    lines: [{ data: calcBIAS(closes, 6), color: '#1a73e8', name: 'BIAS6' }]
+  };
+  // BOLL 副图（上/中/下轨）
+  const bollObj = calcBOLL(closes);
+  const boll = {
+    title: 'BOLL',
+    lines: [
+      { data: bollObj.upper, color: '#e8453c', name: 'UPPER' },
+      { data: bollObj.mid, color: '#ff9800', name: 'MID' },
+      { data: bollObj.lower, color: '#34a853', name: 'LOWER' }
+    ]
+  };
+  // 成交量副图（柱 + 均量线）
+  const vol = {
+    title: 'VOL', zero: true,
+    bars: { data: vols, pos: '#e8453c', neg: '#34a853' },
+    lines: [{ data: calcMA(vols, sp.volParams.volN), color: '#ff9800', name: `VOLMA${sp.volParams.volN}` }]
+  };
+  // VWAP 副图（VWAP 与收盘价）
+  const vwapArr = new Array(closes.length).fill(null);
+  let cumPV = 0, cumV = 0;
+  for (let i = 0; i < closes.length; i++) {
+    cumPV += closes[i] * (vols[i] || 0);
+    cumV += vols[i] || 0;
+    if (cumV > 0) vwapArr[i] = cumPV / cumV;
+  }
+  const vwap = {
+    title: 'VWAP',
+    lines: [
+      { data: vwapArr, color: '#8e44ad', name: 'VWAP' },
+      { data: closes, color: '#999', name: 'CLOSE' }
+    ]
+  };
+
+  switch (strategy) {
+    case 'rate': case 'cross': case 'bar':
+      return [macd];
+    case 'triple':
+      return [macd, kdj, rsi];
+    case 'macdRsi':
+      return [macd, rsi];
+    case 'macdKdj':
+      return [macd, kdj];
+    case 'kdjBottom':
+      return [kdj, macd];
+    case 'rsiKdjBottom': case 'rsiKdjDual':
+      return [rsi, kdj];
+    case 'kdjRsiOverSell':
+      return [kdj, rsi];
+    case 'kdjJ':
+      return [kdj];
+    case 'rsiDual':
+      return [rsiDual];
+    case 'rsiDivergence':
+      return [rsi];
+    case 'bollBreak':
+      return [boll];
+    case 'bias':
+      return [bias];
+    case 'obv':
+      return [obv];
+    case 'vr':
+      return [vr];
+    case 'vwap':
+      return [vwap];
+    case 'volBreakout': case 'volPullback': case 'volRatio': case 'volShrink': case 'volDivergence':
+      return [vol];
+    default:
+      return [macd];
+  }
+}
+
+function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, indicators, instanceKey = 'bt') {
   if (klineCharts[instanceKey]) {
     const old = klineCharts[instanceKey];
     if (old.canvas) {
@@ -1545,10 +1793,19 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
   const padL = 44, padR = 44, padT = 10, padB = 24, gap = 12;
   const chartW = W - padL - padR;
   const totalH = H - padT - padB;
-  const macdH = Math.max(90, Math.round(totalH * 0.34));
-  const mainH = totalH - macdH - gap;
-  const macdTop = padT + mainH + gap;
-  const macdBottom = macdTop + macdH;
+  const cnt = indicators ? indicators.length : 0;
+
+  // 副图纵向布局：单图占34%高度，多图按数量均分；主图至少保留180px
+  const subGap = 6;
+  let subH = cnt > 0 ? Math.max(70, Math.min(160, Math.round(totalH * 0.34 / cnt))) : 0;
+  let mainH = totalH - cnt * subH - (cnt - 1) * subGap - gap;
+  if (mainH < 180 && cnt > 0) {
+    subH = Math.max(56, Math.floor((totalH - gap - 180 - (cnt - 1) * subGap) / cnt));
+    mainH = totalH - cnt * subH - (cnt - 1) * subGap - gap;
+  }
+  const subTops = [];
+  let yTop = padT + mainH + gap;
+  for (let i = 0; i < cnt; i++) { subTops.push(yTop); yTop += subH + (i < cnt - 1 ? subGap : 0); }
 
   const allHighs = ohlcData.map(k => k.high);
   const allLows = ohlcData.map(k => k.low);
@@ -1567,19 +1824,24 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
   const yOf = (price) => padT + (maxP - price) / (maxP - minP) * mainH;
   const xOf = (i) => padL + slot * (i + 0.5);
 
-  // MACD 副图数值范围（DIF/DEA/MACD柱统一取 min/max）
-  const macdVals = [];
-  if (macd) {
-    (macd.dif || []).forEach(v => { if (v != null) macdVals.push(v); });
-    (macd.dea || []).forEach(v => { if (v != null) macdVals.push(v); });
-    (macd.macd || []).forEach(v => { if (v != null) macdVals.push(v); });
-  }
-  let macdMin = macdVals.length ? Math.min(...macdVals) : -1;
-  let macdMax = macdVals.length ? Math.max(...macdVals) : 1;
-  const macdRange = (macdMax - macdMin) || 1;
-  macdMin -= macdRange * 0.1;
-  macdMax += macdRange * 0.1;
-  const yMacdOf = (v) => macdTop + (macdMax - v) / (macdMax - macdMin) * macdH;
+  // 各副图数值范围（固定域直接使用；否则自动 min/max，zero 副图保证 0 在范围内）
+  const subScales = (indicators || []).map(spec => {
+    let vals = [];
+    (spec.lines || []).forEach(l => l.data.forEach(v => { if (v != null && isFinite(v)) vals.push(v); }));
+    if (spec.bars) spec.bars.data.forEach(v => { if (v != null && isFinite(v)) vals.push(v); });
+    if (spec.fixed) return { min: spec.fixed[0], max: spec.fixed[1] };
+    let min = vals.length ? Math.min(...vals) : 0;
+    let max = vals.length ? Math.max(...vals) : 1;
+    const r = (max - min) || 1;
+    if (spec.zero) {
+      if (min > 0) min = 0 - r * 0.15;
+      if (max < 0) max = 0 + r * 0.15;
+    }
+    min -= r * 0.1;
+    max += r * 0.1;
+    return { min, max };
+  });
+  const yOfSub = (si, v) => subTops[si] + (subScales[si].max - v) / (subScales[si].max - subScales[si].min) * subH;
 
   // 按idx分组交易（同一天可能有多次）
   const tradesByIdx = {};
@@ -1588,7 +1850,7 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
     tradesByIdx[t.idx].push(t);
   });
 
-  const instance = { canvas, ctx, ohlcData, labels, trades, tradesByIdx, macd, padL, padR, padT, padB, chartW, mainH, totalH, macdTop, macdH, yMacdOf, maxP, minP, n, slot, bodyW, xOf, yOf, hoverIdx: -1, W, H };
+  const instance = { canvas, ctx, ohlcData, labels, trades, tradesByIdx, indicators, subTops, subScales, subH, padL, padR, padT, padB, chartW, mainH, totalH, maxP, minP, n, slot, bodyW, xOf, yOf, yOfSub, hoverIdx: -1, W, H };
   klineCharts[instanceKey] = instance;
 
   function render() {
@@ -1682,11 +1944,12 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
           ctx.fillText('B', x, ty + 4);
-          // 买入点补充 MACD 柱值
-          if (macd && macd.macd && macd.macd[idx] != null) {
+          // 买入点补充首个副图主值
+          const pv = indicators && indicators[0] ? (indicators[0].bars ? indicators[0].bars.data[idx] : (indicators[0].lines && indicators[0].lines[0] ? indicators[0].lines[0].data[idx] : null)) : null;
+          if (pv != null) {
             ctx.fillStyle = 'rgba(52,168,83,0.75)';
             ctx.font = '8px Consolas, monospace';
-            ctx.fillText(macd.macd[idx].toFixed(3), x, ty + 15);
+            ctx.fillText(pv.toFixed(3), x, ty + 15);
           }
         } else {
           ctx.fillStyle = '#e8453c';
@@ -1706,76 +1969,94 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
           ctx.textAlign = 'center';
           ctx.textBaseline = 'bottom';
           ctx.fillText('S', x, ty - 4);
-          // 卖出点补充 MACD 柱值
-          if (macd && macd.macd && macd.macd[idx] != null) {
+          // 卖出点补充首个副图主值
+          const pv2 = indicators && indicators[0] ? (indicators[0].bars ? indicators[0].bars.data[idx] : (indicators[0].lines && indicators[0].lines[0] ? indicators[0].lines[0].data[idx] : null)) : null;
+          if (pv2 != null) {
             ctx.fillStyle = 'rgba(232,69,60,0.75)';
             ctx.font = '8px Consolas, monospace';
-            ctx.fillText(macd.macd[idx].toFixed(3), x, ty - 15);
+            ctx.fillText(pv2.toFixed(3), x, ty - 15);
           }
         }
       });
     });
 
-    // ===== 绘制 MACD 副图（DIF/DEA线 + MACD柱 + 买卖点） =====
-    if (macd && macd.dif) {
-      const macdArr = macd.macd || [];
+    // ===== 绘制副图（通用：柱/折线/参考线/0轴/买卖点） =====
+    (indicators || []).forEach((spec, si) => {
+      const top = subTops[si];
+      const { min, max } = subScales[si];
+      const yF = (v) => top + (max - v) / (max - min) * subH;
 
-      // 副图背景与网格
+      // 副图背景与网格（3条水平线）
       ctx.fillStyle = 'rgba(26,115,232,0.02)';
-      ctx.fillRect(padL, macdTop, chartW, macdH);
+      ctx.fillRect(padL, top, chartW, subH);
       ctx.strokeStyle = '#f0f0f0';
       ctx.lineWidth = 1;
       ctx.fillStyle = '#888';
       ctx.font = '9px Consolas, monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      for (let i = 0; i <= 2; i++) {
-        const v = macdMin + (macdMax - macdMin) * i / 2;
-        const y = yMacdOf(v);
+      for (let g = 0; g <= 2; g++) {
+        const v = min + (max - min) * g / 2;
+        const y = yF(v);
         ctx.beginPath();
         ctx.moveTo(padL, y);
         ctx.lineTo(padL + chartW, y);
         ctx.stroke();
-        ctx.fillText(v.toFixed(2), padL + chartW + 4, y);
+        ctx.fillText(v.toFixed(spec.fixed ? 0 : 2), padL + chartW + 4, y);
       }
+      // 参考线（如 RSI 70/50/30、VR 阈值等）
+      (spec.refs || []).forEach(r => {
+        if (r.v < min || r.v > max) return;
+        const y = yF(r.v);
+        ctx.strokeStyle = r.color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + chartW, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      });
       // 0 轴
-      const y0 = yMacdOf(0);
-      ctx.strokeStyle = '#bbb';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padL, y0);
-      ctx.lineTo(padL + chartW, y0);
-      ctx.stroke();
-
-      // MACD 柱（正红负绿）
-      for (let i = 0; i < n; i++) {
-        const v = macdArr[i];
-        if (v == null) continue;
-        const x = xOf(i);
-        const yv = yMacdOf(v);
-        ctx.fillStyle = v >= 0 ? '#e8453c' : '#34a853';
-        ctx.fillRect(x - bodyW / 2, Math.min(y0, yv), bodyW, Math.max(1, Math.abs(yv - y0)));
+      let y0 = top + subH;
+      if (spec.zero && min <= 0 && max >= 0) {
+        y0 = yF(0);
+        ctx.strokeStyle = '#bbb';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, y0);
+        ctx.lineTo(padL + chartW, y0);
+        ctx.stroke();
       }
-
-      // DIF / DEA 线
-      const drawMacdLine = (arr, color) => {
-        ctx.strokeStyle = color;
+      // 柱状图（MACD柱/成交量柱，正红负绿）
+      if (spec.bars) {
+        for (let i = 0; i < n; i++) {
+          const v = spec.bars.data[i];
+          if (v == null) continue;
+          const x = xOf(i);
+          const yv = yF(v);
+          ctx.fillStyle = v >= 0 ? spec.bars.pos : spec.bars.neg;
+          ctx.fillRect(x - bodyW / 2, Math.min(y0, yv), bodyW, Math.max(1, Math.abs(yv - y0)));
+        }
+      }
+      // 折线
+      (spec.lines || []).forEach(l => {
+        ctx.strokeStyle = l.color;
         ctx.lineWidth = 1.2;
         ctx.beginPath();
         let started = false;
         for (let i = 0; i < n; i++) {
-          const v = arr[i];
+          const v = l.data[i];
           if (v == null) { started = false; continue; }
-          const x = xOf(i), y = yMacdOf(v);
+          const x = xOf(i), y = yF(v);
           if (started) ctx.lineTo(x, y);
           else { ctx.moveTo(x, y); started = true; }
         }
         ctx.stroke();
-      };
-      drawMacdLine(macd.dif, '#1a73e8');
-      drawMacdLine(macd.dea, '#ff9800');
+      });
 
-      // 副图买卖点标记
+      // 副图买卖点标记（以主值定位，无主值时用0轴/中线）
+      const primaryData = spec.bars ? spec.bars.data : ((spec.lines && spec.lines[0]) ? spec.lines[0].data : null);
       ctx.textAlign = 'center';
       Object.keys(tradesByIdx).forEach(idxStr => {
         const idx = +idxStr;
@@ -1783,8 +2064,8 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
         const hasTrade = dayTrades.some(t => t.type === 'buy' || t.type === 'sell');
         if (!hasTrade) return;
         const x = xOf(idx);
-        const v = macdArr[idx];
-        const yv = v != null ? yMacdOf(v) : y0;
+        const v = primaryData ? primaryData[idx] : null;
+        const yv = v != null ? yF(v) : y0;
         dayTrades.forEach(t => {
           if (t.type === 'buy') {
             const ty = Math.max(y0, yv) + 9;
@@ -1823,12 +2104,14 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
       ctx.fillStyle = '#888';
-      ctx.fillText('MACD', padL, macdTop + 2);
-      ctx.fillStyle = '#1a73e8';
-      ctx.fillText('DIF', padL + 44, macdTop + 2);
-      ctx.fillStyle = '#ff9800';
-      ctx.fillText('DEA', padL + 80, macdTop + 2);
-    }
+      ctx.fillText(spec.title, padL, top + 2);
+      let lx = padL + 44;
+      (spec.lines || []).forEach(l => {
+        ctx.fillStyle = l.color;
+        ctx.fillText(l.name, lx, top + 2);
+        lx += ctx.measureText(l.name).width + 12;
+      });
+    });
 
     // X轴日期标签
     ctx.font = '10px Consolas, monospace';
@@ -1865,15 +2148,17 @@ function drawCandlestickWithSignals(canvasId, ohlcData, labels, trades, macd, in
       { label: '涨跌幅', value: (pctChange >= 0 ? '+' : '') + pctChange.toFixed(2) + '%', color: pctChange >= 0 ? '#e8453c' : '#34a853' },
     ];
 
-    // 当日 MACD 值（DIF/DEA/MACD柱）
-    const m = inst.macd;
-    if (m && m.dif && m.dif[inst.hoverIdx] != null) {
-      const i = inst.hoverIdx;
-      rows.push({ label: 'DIF', value: m.dif[i].toFixed(3), color: '#1a73e8' });
-      rows.push({ label: 'DEA', value: m.dea[i].toFixed(3), color: '#1a73e8' });
-      const macdV = m.macd[i];
-      rows.push({ label: 'MACD', value: macdV.toFixed(3), color: macdV >= 0 ? '#e8453c' : '#34a853' });
-    }
+    // 当日各副图指标值
+    (inst.indicators || []).forEach(spec => {
+      (spec.lines || []).forEach(l => {
+        const v = l.data[inst.hoverIdx];
+        if (v != null) rows.push({ label: l.name, value: v.toFixed(3), color: l.color });
+      });
+      if (spec.bars) {
+        const v = spec.bars.data[inst.hoverIdx];
+        if (v != null) rows.push({ label: spec.title, value: v.toFixed(2), color: v >= 0 ? '#e8453c' : '#34a853' });
+      }
+    });
 
     // 若当日有交易，附加交易信息
     const dayTrades = inst.tradesByIdx[inst.hoverIdx];
@@ -2042,7 +2327,8 @@ const STRATEGY_DESC = {
 
 function updateStrategyDesc() {
   const s = document.getElementById('strategySelect').value;
-  document.getElementById('strategyDesc').innerHTML = STRATEGY_DESC[s];
+  const el = document.getElementById('strategyDesc');
+  el.innerHTML = STRATEGY_DESC[s] || '<span style="color:#999;">该策略类型暂无内置描述，可在策略管理页补充描述。</span>';
 }
 
 // ============ 参数辅助 ============
@@ -2062,7 +2348,7 @@ function resetStrategyParams() {
   document.getElementById('maxAdds').value = 2;
   document.getElementById('takeProfit').value = 5;
   document.getElementById('partialRatio').value = 0.5;
-  document.getElementById('stopLoss').value = 3;
+  document.getElementById('stopLoss').value = 5;
   document.getElementById('enableT1').checked = true;
   document.getElementById('enableFlatFilter').checked = false;
   document.getElementById('flatWindow').value = 10;
@@ -2075,6 +2361,7 @@ function resetStrategyParams() {
   document.getElementById('buyStrengthThreshold').value = 0.02;
   document.getElementById('enableTrendFilter').checked = false;
   document.getElementById('trendMode').value = 'both';
+  document.getElementById('enableBullBuy').checked = true;
   document.getElementById('volN').value = 5;
   document.getElementById('volBreakN').value = 20;
   document.getElementById('volMult').value = 1.5;
@@ -2138,6 +2425,7 @@ function getStrategyParams() {
       enabled: document.getElementById('enableTrendFilter').checked,
       mode: document.getElementById('trendMode').value
     },
+    bullBuy: document.getElementById('enableBullBuy').checked,
     volParams: {
       volN: parseInt(document.getElementById('volN').value),
       volBreakN: parseInt(document.getElementById('volBreakN').value),
@@ -2203,6 +2491,7 @@ function applyStrategyParams(params) {
     setFormField('enableTrendFilter', sp.trendFilter.enabled);
     setFormField('trendMode', sp.trendFilter.mode);
   }
+  setFormField('enableBullBuy', sp.bullBuy);
   if (sp.volParams) {
     setFormField('volN', sp.volParams.volN);
     setFormField('volBreakN', sp.volParams.volBreakN);
@@ -2219,6 +2508,35 @@ function applyStrategyParams(params) {
 // 从策略管理页跳转进入时（backtest.html?load=ID），加载策略参数到表单
 // 当前已加载策略的ID（从策略管理页 ?load=ID 进入时记录，用于保存回测结果关联）
 let currentStrategyId = null;
+
+// 从策略表动态加载预设策略下拉选项（不再写死在 HTML 中）
+async function loadStrategyOptions() {
+  const select = document.getElementById('strategySelect');
+  try {
+    const res = await fetch(`${API_BASE}/api/strategies`);
+    const data = await res.json();
+    const list = (data.data || []).filter(s => s.is_active !== false);
+    if (list.length === 0) {
+      select.innerHTML = '<option value="">暂无已保存策略（请到策略管理页创建）</option>';
+      return;
+    }
+    // 下拉 value 只代表策略类型，同名类型去重（API 按创建时间倒序，取最新一条的名称）
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const seen = new Set();
+    const opts = [];
+    for (const s of list) {
+      if (seen.has(s.strategy_type)) continue;
+      seen.add(s.strategy_type);
+      opts.push(`<option value="${esc(s.strategy_type)}">${esc(s.strategy_name)}</option>`);
+    }
+    select.innerHTML = opts.join('');
+    // 默认选中第一条（与旧版默认选中首个策略的行为一致）
+    if (!select.value && select.options.length > 0) select.value = select.options[0].value;
+  } catch (e) {
+    select.innerHTML = '<option value="">策略加载失败，请确认已运行 python server.py</option>';
+  }
+  updateStrategyDesc();
+}
 
 async function loadStrategyFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -2334,7 +2652,7 @@ function runBacktest() {
         macd: macdAll.macd.slice(warmup),
       };
     }
-    const signals = generateSignals(strategy, macdResult, ohlc, sp.flatFilter, sp.fastSell, sp.ma5Sell, sp.aboveWaterOnly, sp.buyStrength, sp.trendFilter, sp.volParams);
+    const signals = generateSignals(strategy, macdResult, ohlc, sp.flatFilter, sp.fastSell, sp.ma5Sell, sp.aboveWaterOnly, sp.buyStrength, sp.trendFilter, sp.volParams, sp.bullBuy);
     const result = runBacktestEngine(ohlc, macdResult, signals, sp);
     const metrics = calcMetrics(ohlc, result);
     const strategyName = (document.querySelector(`#strategySelect option[value="${strategy}"]`) || {}).textContent || strategy;
@@ -2379,6 +2697,7 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
         水上仅死叉: ${cfg.sp.aboveWaterOnly ? '启用' : '关闭'} |
         金叉强度确认: ${cfg.sp.buyStrength.enabled ? `启用(柱≥${cfg.sp.buyStrength.threshold}才买)` : '关闭'} |
         下降趋势过滤: ${cfg.sp.trendFilter.enabled ? `启用(${trendModeLabel(cfg.sp.trendFilter.mode)},延迟补买)` : '关闭'} |
+        多头空仓补买: ${cfg.sp.bullBuy ? '启用' : '关闭'} |
         手续费: 佣金${cfg.sp.feeCfg.commissionRate}万(最低${cfg.sp.feeCfg.commissionMin}元) + 印花税${cfg.sp.feeCfg.stampTax}千 + 过户费${cfg.sp.feeCfg.transferFee}万
       </div>
       <div class="result-grid">
@@ -2477,8 +2796,9 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
     </div>
   `;
 
-  // 渲染K线（带买卖点）
-  drawCandlestickWithSignals('btKline', ohlc, labels, trades, macdResult, 'btKline');
+  // 渲染K线（带买卖点；副图随策略变化：MACD策略→MACD图，OBV→OBV，RSI→RSI，组合→多图）
+  const indicators = buildIndicators(cfg.strategy, ohlc, macdResult, cfg.sp);
+  drawCandlestickWithSignals('btKline', ohlc, labels, trades, indicators, 'btKline');
   // 渲染资金曲线
   renderEquityCurve('btEquity', labels, equity, m.initCapital, 'btEquity');
 }
@@ -2489,8 +2809,11 @@ updateStrategyDesc();
 // ============ 页面初始化 ============
 // 加载本地库 stock_info 股票目录（下拉+输入联想）
 loadStockCatalog();
-// 从策略管理页跳转进入时（?load=ID）自动加载策略参数
-loadStrategyFromUrl();
+// 先从策略表动态加载策略下拉，再处理从策略管理页跳转（?load=ID）自动加载参数
+(async function initStrategies() {
+  await loadStrategyOptions();
+  await loadStrategyFromUrl();
+})();
 (function initRangeUI() {
   // 时间段模式默认值：起始=2年前，结束=今天（与「最近2年」对齐）
   const today = new Date();
