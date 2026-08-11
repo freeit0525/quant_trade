@@ -114,7 +114,7 @@
     <h1>买卖点回测</h1>
     <a class="back" href="index.html">← 返回入口</a>
   </div>
-  <div class="subtitle">用库中现有股票数据批量回测买卖点预测模型：沿用预测页同样的12因子评分与信号判定口径，统计信号命中率、收益与因子有效性，找出模型不足</div>
+  <div class="subtitle">用库中现有股票数据批量回测买卖点预测模型：沿用预测页同样的13因子评分与信号判定口径，统计信号命中率、收益与因子有效性，找出模型不足</div>
 
   <!-- 股票与数据范围 -->
   <div class="panel">
@@ -206,8 +206,17 @@
     <div class="hint">命中口径与预测页一致：买入信号 N 日后上涨=命中，卖出信号 N 日后下跌=命中；其余为未命中（N 日窗口不足时不统计）</div>
 
     <div class="row" style="margin-top:10px; align-items:center;">
-      <div class="field" style="flex:0 0 auto;">
-        <label>因子权重（与预测页同引擎）</label>
+      <div class="field" style="flex:1;">
+        <label>因子权重（买入/卖出各一套独立权重，与预测页同引擎）</label>
+        <div style="display:flex; gap:16px; padding:6px 0; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="wtTab" value="buy" checked onchange="onWtTabChange()"> 买入权重
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="wtTab" value="sell" onchange="onWtTabChange()"> 卖出权重
+          </label>
+          <span id="wtTabNote" class="hint" style="align-self:center; white-space:nowrap;">当前编辑：买入权重（默认已调优）</span>
+        </div>
         <div class="weight-grid" id="weightGrid"></div>
       </div>
       <div style="display:flex; gap:8px; align-self:flex-end;">
@@ -312,7 +321,23 @@ function buildRangeParams() {
   return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()) };
 }
 
-// ============ 权重 ============
+// ============ 权重（买入/卖出两套独立） ============
+let _wtTab = 'buy';
+const _wtBuf = {
+  buy: { ...DEFAULT_WEIGHTS },
+  sell: { ...DEFAULT_WEIGHTS_SELL },
+};
+function getWtTab() {
+  const el = document.querySelector('input[name="wtTab"]:checked');
+  return el ? el.value : 'buy';
+}
+function onWtTabChange() {
+  _wtBuf[_wtTab] = getWeights();      // 保存当前 tab 控件值
+  _wtTab = getWtTab();                // 切换
+  syncGridToBuf();                    // 控件恢复为切换后 tab 的权重
+  const note = document.getElementById('wtTabNote');
+  if (note) note.textContent = `当前编辑：${_wtTab === 'sell' ? '卖出权重（默认沿用旧权重）' : '买入权重（默认已调优）'}`;
+}
 function getWeights() {
   const w = {};
   FACTOR_DEFS.forEach(f => {
@@ -321,11 +346,19 @@ function getWeights() {
   });
   return w;
 }
-function resetWeights() {
-  Object.entries(DEFAULT_WEIGHTS).forEach(([k, val]) => {
-    const el = document.getElementById('w_' + k);
-    if (el) { el.value = val; document.getElementById('wv_' + k).textContent = val; }
+function getWeightsByTab(tab) {
+  return { ...(_wtBuf[tab] || DEFAULT_WEIGHTS) };
+}
+function syncGridToBuf() {
+  const w = _wtBuf[_wtTab];
+  FACTOR_DEFS.forEach(f => {
+    const el = document.getElementById('w_' + f.key);
+    if (el) { el.value = w[f.key]; document.getElementById('wv_' + f.key).textContent = w[f.key]; }
   });
+}
+function resetWeights() {
+  _wtBuf[_wtTab] = { ...(_wtTab === 'sell' ? DEFAULT_WEIGHTS_SELL : DEFAULT_WEIGHTS) };
+  syncGridToBuf();
 }
 function initWeightGrid() {
   const grid = document.getElementById('weightGrid');
@@ -337,6 +370,7 @@ function initWeightGrid() {
              oninput="document.getElementById('wv_${f.key}').textContent=this.value">
       <span class="val" id="wv_${f.key}">${DEFAULT_WEIGHTS[f.key]}</span>
     </div>`).join('');
+  syncGridToBuf();
 }
 function showFactorDesc(key) {
   const def = FACTOR_DEFS.find(f => f.key === key);
@@ -345,8 +379,8 @@ function showFactorDesc(key) {
 }
 
 // ============ 回测核心 ============
-// 对单只股票：全量逐日评分 → 生成信号 → 评价 N 日收益
-function backtestOneStock(rows, info, weights, buyTh, sellTh, evalDays) {
+// 对单只股票：全量逐日双向评分（买入/卖出各一套权重）→ 生成信号 → 评价 N 日收益
+function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays) {
   // 附加 OBV 预计算（引擎 factorOBV 自动复用，避免每根K线 O(n²) 重建）
   if (!rows.__obv) {
     const obv = [0];
@@ -364,17 +398,17 @@ function backtestOneStock(rows, info, weights, buyTh, sellTh, evalDays) {
   }
 
   const signals = [];
-  let prevScore = null;
+  let prevBuy = null, prevSell = null;
   for (let t = 40; t < rows.length; t++) {
-    const { S, parts } = scoreAt(rows, t, weights, info);
-    if (prevScore != null) {
-      if (S >= buyTh && prevScore < buyTh - 8) {
-        signals.push({ t, type: 'buy', S, parts });
-      } else if (S <= sellTh && prevScore > sellTh + 8) {
-        signals.push({ t, type: 'sell', S, parts });
-      }
+    const { Sbuy, Ssell, parts } = scoreAtDual(rows, t, weightsBuy, weightsSell, info);
+    if (prevBuy != null && Sbuy >= buyTh && prevBuy < buyTh - 8) {
+      signals.push({ t, type: 'buy', S: Sbuy, parts });
     }
-    prevScore = S;
+    if (prevSell != null && Ssell <= sellTh && prevSell > sellTh + 8) {
+      signals.push({ t, type: 'sell', S: Ssell, parts });
+    }
+    prevBuy = Sbuy;
+    prevSell = Ssell;
   }
 
   const results = [];
@@ -463,7 +497,10 @@ async function runBacktest() {
   let range;
   try { range = buildRangeParams(); } catch (e) { showError(e.message); return; }
 
-  const weights = getWeights();
+  // 保存当前 tab 控件值，再取买入/卖出两套权重
+  _wtBuf[_wtTab] = getWeights();
+  const weightsBuy = getWeightsByTab('buy');
+  const weightsSell = getWeightsByTab('sell');
   btn.disabled = true;
   btn.textContent = '回测中...';
   statusEl.textContent = '';
@@ -502,7 +539,7 @@ async function runBacktest() {
         if (!idata.error) info = { ...info, ...idata };
       } catch (e) { console.warn('获取股票信息失败:', code, e); }
 
-      const resList = backtestOneStock(rows, info, weights, buyTh, sellTh, evalDays);
+      const resList = backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays);
       resList.forEach(r => _allResults.push(r));
     } catch (e) {
       statusEl.textContent += ` ${code}出错: ${e.message}`;

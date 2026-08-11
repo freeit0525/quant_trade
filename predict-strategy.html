@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>买卖点策略回测</title>
+<link rel="stylesheet" href="stock-picker.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    padding: 20px;
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; color: #1a73e8; }
+  .back { font-size: 13px; color: #1a73e8; text-decoration: none; white-space: nowrap; }
+  .back:hover { text-decoration: underline; }
+  .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: #444; border-left: 3px solid #1a73e8; padding-left: 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .field { flex: 1; min-width: 120px; }
+  .field.small { flex: 0 0 130px; }
+  label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+  input, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #1a73e8; }
+  input[type=checkbox] { width: auto; }
+  button {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #1557b0; }
+  button.secondary { background: #fff; color: #1a73e8; border: 1px solid #1a73e8; }
+  button.secondary:hover { background: #e8f0fe; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
+  .up { color: #e8453c; }
+  .down { color: #34a853; }
+  .mid { color: #ff9800; }
+
+  /* 股票多选 */
+  .stock-checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+  .stock-checks label {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 13px; color: #444; cursor: pointer; white-space: nowrap;
+  }
+  .stock-checks input { width: auto; }
+
+  /* 参数组 */
+  .sub-block { border-top: 1px dashed #e5e5e5; margin-top: 12px; padding-top: 12px; }
+  .sub-block h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .inline-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #444; cursor: pointer; white-space: nowrap; padding-top: 6px; }
+  .inline-label input { width: auto; }
+
+  /* 汇总卡片 */
+  .stat-chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+  .chip { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 8px 14px; font-size: 13px; }
+  .chip .k { color: #888; display: block; font-size: 11px; white-space: nowrap; }
+  .chip .v { font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .chip .v.up { color: #e8453c; }
+  .chip .v.down { color: #34a853; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #eee; font-family: Consolas, monospace; }
+  th { background: #f8f9fa; color: #666; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .tag { display: inline-block; font-size: 11px; border-radius: 3px; padding: 1px 8px; }
+  .tag.buy { background: #fdecea; color: #e8453c; }
+  .tag.sell { background: #e8f5e9; color: #34a853; }
+  .tag.tp { background: #fdf1e3; color: #e0873c; }
+  .tag.expire { background: #eef0f2; color: #666; }
+
+  .chart-wrap { margin-top: 12px; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #eee; }
+  .chart-wrap h3 { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .chart-canvas-wrap { position: relative; height: 320px; }
+
+  .note-box { background: #fdf8ec; border: 1px solid #f3e6c5; border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #7a5b16; margin-top: 10px; line-height: 1.7; }
+  .note-box strong { color: #7a5b16; }
+
+  .pager { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: #666; }
+  .pager button { padding: 4px 12px; font-size: 12px; }
+  .pager .pg { flex: 0 0 auto; white-space: nowrap; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="ui-modal.js"></script>
+<script src="query-history.js"></script>
+<script src="predict-engine.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <h1>买卖点策略回测</h1>
+    <a class="back" href="index.html">← 返回入口</a>
+  </div>
+  <div class="subtitle">把买卖点信号做成可实盘的完整策略：次日开盘入场、T+1、止损/止盈/持仓到期、手续费印花税，输出资金曲线、最大回撤与盈亏比——验证信号命中率高是否真的能赚钱</div>
+
+  <!-- 股票与数据范围 -->
+  <div class="panel">
+    <h2>股票与数据范围</h2>
+    <div class="row" style="align-items:center;">
+      <div class="field" style="flex:0 0 auto; min-width:0;">
+        <label>回测股票（库中已有K线）</label>
+        <div id="stockChecks" class="stock-checks"><span class="hint">正在加载库内股票...</span></div>
+      </div>
+      <div style="display:flex; gap:8px; align-self:flex-end;">
+        <button class="secondary" onclick="setAllStocks(true)">全选</button>
+        <button class="secondary" onclick="setAllStocks(false)">清空</button>
+      </div>
+    </div>
+
+    <div class="row" style="align-items:center; margin-top:4px;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>数据范围</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="recent" onchange="onRangeModeChange()"> 最近
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="rangeMode" value="all" checked onchange="onRangeModeChange()"> 自上市以后
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div id="recentModeRow" class="row" style="display:none;">
+      <div class="field small">
+        <label>数量</label>
+        <input type="number" id="rangeCount" value="2" min="1" oninput="updateRangeUI()">
+      </div>
+      <div class="field small">
+        <label>单位</label>
+        <select id="rangeUnit" onchange="updateRangeUI()">
+          <option value="year" selected>年</option>
+          <option value="month">月</option>
+          <option value="quarter">季度</option>
+        </select>
+      </div>
+      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px; white-space:nowrap;">≈ 500 个交易日</div>
+    </div>
+
+    <div id="periodModeRow" class="row" style="display:none;">
+      <div class="field small">
+        <label>起始日期</label>
+        <input type="date" id="begDate">
+      </div>
+      <div class="field small">
+        <label>结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+    </div>
+
+    <div id="rangeHint" class="hint">默认回测自上市以来的全部历史数据</div>
+  </div>
+
+  <!-- 策略参数 -->
+  <div class="panel">
+    <h2>策略参数</h2>
+
+    <div class="row" style="align-items:center;">
+      <div class="field" style="flex:0 0 auto;">
+        <label>信号来源</label>
+        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="sigMode" value="model" checked onchange="onSigModeChange()"> 模型信号（13因子）
+          </label>
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+            <input type="radio" name="sigMode" value="rule" onchange="onSigModeChange()"> 超跌反弹规则
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模型信号参数 -->
+    <div id="modelParams" class="sub-block">
+      <h3>模型信号参数（与预测页同引擎：Sbuy跃升触发买入）</h3>
+      <div class="row">
+        <div class="field small">
+          <label>买入阈值 BUY_TH</label>
+          <input type="number" id="buyTh" value="25" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号">
+        </div>
+        <div class="field small">
+          <label>卖出阈值 SELL_TH</label>
+          <input type="number" id="sellTh" value="-25" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号">
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:0;">
+          <label>平仓方式</label>
+          <label class="inline-label"><input type="checkbox" id="useSellSig" checked> 模型卖出信号也触发平仓</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 超跌反弹规则参数 -->
+    <div id="ruleParams" class="sub-block" style="display:none;">
+      <h3>超跌反弹规则（近5日跌幅达标 且 当日收阳，全库回测最有效信号）</h3>
+      <div class="row">
+        <div class="field small">
+          <label>近5日跌幅≥(%)</label>
+          <input type="number" id="ruleDrop" value="8" min="1" max="20" step="1">
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:0;">
+          <label>入场条件</label>
+          <label class="inline-label"><input type="checkbox" id="ruleYang" checked> 当日收阳</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub-block">
+      <h3>交易规则</h3>
+      <div class="row">
+        <div class="field small">
+          <label>止损(%)</label>
+          <input type="number" id="stopLoss" value="5" min="0" max="20" step="0.5" title="0=不止损；当日最低价触及止损价即全平">
+        </div>
+        <div class="field small">
+          <label>止盈(%)</label>
+          <input type="number" id="takeProfit" value="8" min="0" max="30" step="0.5" title="0=不止盈；当日最高价触及止盈价即全平">
+        </div>
+        <div class="field small">
+          <label>持仓上限(交易日)</label>
+          <input type="number" id="maxHold" value="10" min="0" max="60" title="0=不限期；超过上限按当日收盘平仓">
+        </div>
+        <div class="field small">
+          <label>单笔仓位比例</label>
+          <input type="number" id="positionRatio" value="1" min="0.1" max="1" step="0.1" title="每笔用可用资金的该比例买入（100股整手）">
+        </div>
+      </div>
+      <div class="row" style="align-items:center;">
+        <div class="field" style="flex:0 0 auto;">
+          <label>成交时机</label>
+          <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+              <input type="radio" name="priceMode" value="nextOpen" checked> 次日开盘（推荐，贴近实盘）
+            </label>
+            <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+              <input type="radio" name="priceMode" value="sigClose"> 信号日收盘（宽松）
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="hint">信号在收盘后产生，实盘只能在次日操作，故默认按次日开盘价成交；T+1 限制下一交易日才可卖出</div>
+    </div>
+
+    <div class="sub-block">
+      <h3>资金与手续费（A股标准）</h3>
+      <div class="row">
+        <div class="field small">
+          <label>初始资金(元)</label>
+          <input type="number" id="initCapital" value="100000" min="1000">
+        </div>
+        <div class="field small">
+          <label>佣金费率(万分之)</label>
+          <input type="number" id="commissionRate" value="2.5" min="0" step="0.1">
+        </div>
+        <div class="field small">
+          <label>佣金最低(元/笔)</label>
+          <input type="number" id="commissionMin" value="5" min="0">
+        </div>
+        <div class="field small">
+          <label>印花税(千分之，卖出)</label>
+          <input type="number" id="stampTax" value="0.5" min="0" step="0.05">
+        </div>
+        <div class="field small">
+          <label>过户费(万分之)</label>
+          <input type="number" id="transferFee" value="0.1" min="0" step="0.05">
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <button id="runBtn" onclick="runStrategy()">开始策略回测</button>
+      <span id="runStatus" class="hint" style="align-self:center;"></span>
+    </div>
+  </div>
+
+  <!-- 回测结果 -->
+  <div id="resultArea"></div>
+</div>
+
+<script>
+// ============ 基础工具 ============
+const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
+  ? 'http://127.0.0.1:8000' : '';
+const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
+const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
+
+function showError(msg) { showErrorModal(msg); }
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ============ 股票加载 ============
+let STOCKS = [];
+async function loadStockList() {
+  const wrap = document.getElementById('stockChecks');
+  try {
+    const res = await fetch(`${API_BASE}/api/stock_list`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    STOCKS = data.data || [];
+    if (!STOCKS.length) {
+      wrap.innerHTML = '<span class="hint">库中暂无K线数据，请先在「数据拉取」页导入</span>';
+      return;
+    }
+    wrap.innerHTML = STOCKS.map(s => `
+      <label><input type="checkbox" class="stock-cb" value="${s.Code}" checked> ${s.Code} ${s.Name || ''}</label>
+    `).join('');
+  } catch (e) {
+    wrap.innerHTML = `<span class="error" style="display:block;">加载股票列表失败: ${e.message}</span>`;
+  }
+}
+function setAllStocks(on) {
+  document.querySelectorAll('.stock-cb').forEach(cb => cb.checked = on);
+}
+function getSelectedStocks() {
+  return [...document.querySelectorAll('.stock-cb:checked')].map(cb => cb.value);
+}
+
+// ============ 数据范围 ============
+function getRangeMode() {
+  const el = document.querySelector('input[name="rangeMode"]:checked');
+  return el ? el.value : 'all';
+}
+function onRangeModeChange() {
+  const mode = getRangeMode();
+  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
+  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
+  updateRangeUI();
+}
+function estimateTradingDays() {
+  const count = parseInt(document.getElementById('rangeCount').value) || 0;
+  const unit = document.getElementById('rangeUnit').value;
+  return Math.max(count * (UNIT_TRADING_DAYS[unit] || 1), 120);
+}
+function updateRangeUI() {
+  const mode = getRangeMode();
+  const hint = document.getElementById('rangeHint');
+  if (mode === 'all') { hint.textContent = '回测自上市以来的全部历史数据'; }
+  else if (mode === 'recent') {
+    const days = estimateTradingDays();
+    document.getElementById('recentHint').textContent = `≈ ${days} 个交易日`;
+    hint.textContent = `回测最近 ${document.getElementById('rangeCount').value} ${UNIT_LABEL[document.getElementById('rangeUnit').value]}（≈${days} 个交易日）`;
+  } else {
+    hint.textContent = '回测指定时间段内的数据';
+  }
+}
+function dateToYYYYMMDD(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+function buildRangeParams() {
+  const mode = getRangeMode();
+  if (mode === 'all') return { beg: '19900101', end: dateToYYYYMMDD(new Date()) };
+  if (mode === 'period') {
+    const b = document.getElementById('begDate').value;
+    const e = document.getElementById('endDate').value;
+    if (!b || !e) throw new Error('请选择起止日期');
+    if (b.replace(/-/g, '') > e.replace(/-/g, '')) throw new Error('起始日期不能晚于结束日期');
+    return { beg: b.replace(/-/g, ''), end: e.replace(/-/g, '') };
+  }
+  const tradingDays = estimateTradingDays();
+  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+  const bd = new Date();
+  bd.setDate(bd.getDate() - naturalDays);
+  return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()) };
+}
+
+// ============ 信号来源切换 ============
+function onSigModeChange() {
+  const mode = document.querySelector('input[name="sigMode"]:checked').value;
+  document.getElementById('modelParams').style.display = mode === 'model' ? 'block' : 'none';
+  document.getElementById('ruleParams').style.display = mode === 'rule' ? 'block' : 'none';
+}
+
+// ============ 手续费 ============
+function calcFee(turnover, isBuy, cfg) {
+  const { commissionRate, commissionMin, stampTax, transferFee } = cfg;
+  let commission = turnover * commissionRate / 10000;
+  if (commission < commissionMin) commission = commissionMin;
+  const stamp = isBuy ? 0 : turnover * stampTax / 1000;
+  const transfer = turnover * transferFee / 10000;
+  return { commission, stamp, transfer, total: commission + stamp + transfer };
+}
+
+// ============ 策略模拟引擎 ============
+// 单仓轮动：多只股票按信号日先后先到先得，同一时间只持有一只；信号在收盘产生，默认次日开盘买入
+function simulateStrategy(perStock, params) {
+  const feeCfg = {
+    commissionRate: params.commissionRate,
+    commissionMin: params.commissionMin,
+    stampTax: params.stampTax,
+    transferFee: params.transferFee,
+  };
+
+  // 1. 合并入场事件（按真实日期排序，跨股票统一时间轴；同日多股先到先得）
+  const events = [];
+  perStock.forEach((ps, si) => {
+    ps.entryIdx.forEach(t => {
+      if (t + 1 < ps.rows.length) events.push({ si, sigIdx: t, sigDate: ps.rows[t].date });
+    });
+  });
+  events.sort((a, b) => {
+    if (a.sigDate !== b.sigDate) return a.sigDate < b.sigDate ? -1 : 1;
+    return a.si - b.si;
+  });
+  if (!events.length) return null;
+
+  let cash = params.initCapital;
+  let totalFee = 0;
+  const trades = [];
+  let lastSellDate = null; // 上一笔已平仓交易的卖出日（防止持仓时间重叠）
+
+  for (const ev of events) {
+    if (lastSellDate != null && ev.sigDate < lastSellDate) continue; // 上一笔持仓未了结前的信号跳过
+    const ps = perStock[ev.si];
+    const rows = ps.rows;
+    const t = ev.sigIdx;
+    const entryIdx = params.priceMode === 'nextOpen' ? t + 1 : t;
+    if (entryIdx >= rows.length - 1) continue; // 末根K线无下一交易日可卖（T+1），跳过
+    const entryPrice = params.priceMode === 'nextOpen' ? v(rows[entryIdx].open) : v(rows[entryIdx].close);
+    if (entryPrice == null || entryPrice <= 0) continue;
+
+    // 仓位：按可用资金×比例买入，100股整手（预留手续费）
+    const useCash = cash * params.positionRatio;
+    const estFeeRate = (feeCfg.commissionRate + feeCfg.transferFee) / 10000;
+    let shares = Math.floor(useCash / (entryPrice * (1 + estFeeRate)) / 100) * 100;
+    if (shares <= 0) continue;
+    let gross = shares * entryPrice;
+    let fee = calcFee(gross, true, feeCfg);
+    let totalCost = gross + fee.total;
+    if (totalCost > cash) { // 资金不足则按现金重算
+      shares = Math.floor(cash / (entryPrice * (1 + estFeeRate)) / 100) * 100;
+      if (shares <= 0) continue;
+      gross = shares * entryPrice;
+      fee = calcFee(gross, true, feeCfg);
+      totalCost = gross + fee.total;
+      if (totalCost > cash) continue;
+    }
+    cash -= totalCost;
+    totalFee += fee.total;
+
+    // 2. 出场扫描（T+1：最早入场次日才能卖）
+    const stopPrice = params.stopLoss > 0 ? entryPrice * (1 - params.stopLoss / 100) : 0;
+    const tpPrice = params.takeProfit > 0 ? entryPrice * (1 + params.takeProfit / 100) : Infinity;
+    let exit = null;
+    for (let j = entryIdx + 1; j < rows.length; j++) {
+      const k = rows[j];
+      if (stopPrice > 0 && v(k.low) != null && v(k.low) <= stopPrice) { exit = { j, price: stopPrice, reason: `止损${params.stopLoss}%` }; break; }
+      if (isFinite(tpPrice) && v(k.high) != null && v(k.high) >= tpPrice) { exit = { j, price: tpPrice, reason: `止盈${params.takeProfit}%` }; break; }
+      if (ps.sellIdxSet && ps.sellIdxSet.has(j)) { const c = v(k.close); if (c != null) { exit = { j, price: c, reason: '卖出信号' }; break; } }
+      if (params.maxHold > 0 && j - entryIdx >= params.maxHold) { const c = v(k.close); if (c != null) { exit = { j, price: c, reason: `持仓${params.maxHold}日到期` }; break; } }
+    }
+    if (!exit) {
+      const c = v(rows[rows.length - 1].close);
+      exit = { j: rows.length - 1, price: c != null ? c : entryPrice, reason: '数据结束' };
+    }
+
+    const sGross = exit.price * shares;
+    const sFee = calcFee(sGross, false, feeCfg);
+    const sNet = sGross - sFee.total;
+    cash += sNet;
+    totalFee += sFee.total;
+    trades.push({
+      si: ev.si, symbol: ps.symbol, name: ps.name,
+      buyIdx: entryIdx, buyDate: rows[entryIdx].date, buyPrice: entryPrice, buyFee: fee.total,
+      sellIdx: exit.j, sellDate: rows[exit.j].date, sellPrice: exit.price, sellFee: sFee.total,
+      shares, gross: totalCost, net: sNet, netPnl: sNet - totalCost,
+      returnPct: (sNet - totalCost) / totalCost,
+      holdDays: exit.j - entryIdx, reason: exit.reason,
+    });
+    lastSellDate = rows[exit.j].date;
+  }
+  if (!trades.length) return null;
+
+  // 3. 资金曲线（含基准：等权买入持有组合，同窗口）
+  const firstDate = trades[0].buyDate;
+  const lastDate = trades[trades.length - 1].sellDate;
+  const dateSet = new Set();
+  perStock.forEach(ps => ps.rows.forEach(r => { if (r.date >= firstDate && r.date <= lastDate) dateSet.add(r.date); }));
+  const dates = [...dateSet].sort();
+
+  // 每只股票 date→收盘价 / date→日涨跌幅
+  const priceMaps = perStock.map(ps => {
+    const m = new Map();
+    ps.rows.forEach(r => { if (r.date) m.set(r.date, v(r.close)); });
+    return m;
+  });
+  const retMaps = perStock.map(ps => {
+    const m = new Map();
+    let prev = null;
+    ps.rows.forEach(r => {
+      const c = v(r.close);
+      if (prev != null && c != null && prev > 0) m.set(r.date, c / prev - 1);
+      prev = c != null ? c : prev;
+    });
+    return m;
+  });
+
+  // 交易事件序列（卖出先于买入，防御排序）
+  const tradeEvents = [];
+  trades.forEach((tr, i) => {
+    tradeEvents.push({ date: tr.buyDate, kind: 'buy', ti: i });
+    tradeEvents.push({ date: tr.sellDate, kind: 'sell', ti: i });
+  });
+  tradeEvents.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.kind === 'sell' ? -1 : 1));
+
+  let ptr = 0, curCash = params.initCapital;
+  let active = null; // {si, shares, lastClose}
+  let bench = params.initCapital;
+  const eq = [], bq = [], lab = [];
+  for (const d of dates) {
+    while (ptr < tradeEvents.length && tradeEvents[ptr].date <= d) {
+      const ev = tradeEvents[ptr];
+      const tr = trades[ev.ti];
+      if (ev.kind === 'buy') {
+        curCash -= tr.gross;
+        active = { si: tr.si, shares: tr.shares, lastClose: tr.buyPrice };
+      } else {
+        curCash += tr.net;
+        active = null;
+      }
+      ptr++;
+    }
+    let val;
+    if (active) {
+      const px = priceMaps[active.si].get(d);
+      if (px != null) active.lastClose = px;
+      val = curCash + active.shares * (active.lastClose != null ? active.lastClose : 0);
+    } else {
+      val = curCash;
+    }
+    // 基准：当天有数据的股票等权日涨幅复利
+    const rets = [];
+    perStock.forEach((ps, si) => { const r = retMaps[si].get(d); if (r != null) rets.push(r); });
+    if (rets.length) bench *= 1 + rets.reduce((a, b) => a + b, 0) / rets.length;
+    eq.push(val); bq.push(bench); lab.push(d);
+  }
+
+  // 4. 指标
+  const wins = trades.filter(t => t.netPnl > 0);
+  const losses = trades.filter(t => t.netPnl <= 0);
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.netPnl, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.netPnl, 0) / losses.length : 0;
+  const finalEquity = eq.length ? eq[eq.length - 1] : params.initCapital;
+  const totalReturn = finalEquity / params.initCapital - 1;
+  const years = (new Date(lastDate) - new Date(firstDate)) / (365.25 * 24 * 3600 * 1000);
+  const annualReturn = years > 0.05 && finalEquity > 0 ? Math.pow(finalEquity / params.initCapital, 1 / years) - 1 : null;
+  let peak = eq[0] || params.initCapital, maxDrawdown = 0;
+  eq.forEach(val => {
+    if (val > peak) peak = val;
+    const dd = peak > 0 ? (peak - val) / peak : 0;
+    if (dd > maxDrawdown) maxDrawdown = dd;
+  });
+  const benchReturn = bq.length ? bq[bq.length - 1] / params.initCapital - 1 : null;
+
+  return {
+    trades, eq, bq, lab, totalFee,
+    stats: {
+      n: trades.length,
+      winRate: trades.length ? wins.length / trades.length : 0,
+      plr: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : null,
+      avgWin, avgLoss,
+      avgReturnPct: trades.length ? trades.reduce((s, t) => s + t.returnPct, 0) / trades.length : 0,
+      avgHold: trades.length ? trades.reduce((s, t) => s + t.holdDays, 0) / trades.length : 0,
+      totalReturn, annualReturn, maxDrawdown, benchReturn,
+      finalEquity, totalFee, firstDate, lastDate,
+    },
+  };
+}
+
+// ============ 主流程 ============
+async function runStrategy() {
+  const btn = document.getElementById('runBtn');
+  const statusEl = document.getElementById('runStatus');
+  const codes = getSelectedStocks();
+  if (!codes.length) { showError('请至少选择一只股票'); return; }
+
+  let params;
+  try {
+    params = {
+      sigMode: document.querySelector('input[name="sigMode"]:checked').value,
+      buyTh: parseInt(document.getElementById('buyTh').value) || 25,
+      sellTh: parseInt(document.getElementById('sellTh').value) || -25,
+      useSellSig: document.getElementById('useSellSig').checked,
+      ruleDrop: parseInt(document.getElementById('ruleDrop').value) || 8,
+      ruleYang: document.getElementById('ruleYang').checked,
+      stopLoss: parseFloat(document.getElementById('stopLoss').value) || 0,
+      takeProfit: parseFloat(document.getElementById('takeProfit').value) || 0,
+      maxHold: parseInt(document.getElementById('maxHold').value) || 0,
+      positionRatio: parseFloat(document.getElementById('positionRatio').value) || 1,
+      priceMode: document.querySelector('input[name="priceMode"]:checked').value,
+      initCapital: parseFloat(document.getElementById('initCapital').value) || 100000,
+      commissionRate: parseFloat(document.getElementById('commissionRate').value) || 0,
+      commissionMin: parseFloat(document.getElementById('commissionMin').value) || 0,
+      stampTax: parseFloat(document.getElementById('stampTax').value) || 0,
+      transferFee: parseFloat(document.getElementById('transferFee').value) || 0,
+    };
+    if (params.initCapital <= 0) throw new Error('初始资金必须大于0');
+  } catch (e) { showError('参数错误: ' + e.message); return; }
+
+  let range;
+  try { range = buildRangeParams(); } catch (e) { showError(e.message); return; }
+
+  btn.disabled = true;
+  btn.textContent = '回测中...';
+  statusEl.textContent = '';
+  document.getElementById('resultArea').innerHTML = '';
+
+  const perStock = [];
+  let done = 0;
+  for (const code of codes) {
+    statusEl.textContent = `正在加载 ${code}（${done + 1}/${codes.length}）...`;
+    try {
+      const res = await fetch(`${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`);
+      const data = await res.json();
+      if (data.error || !data.data || !data.data.length) { done++; continue; }
+      const rows = data.data.map(k => ({
+        date: k.date,
+        open: v(k.open), close: v(k.close), high: v(k.high), low: v(k.low),
+        volume: v(k.volume), amount: v(k.amount), turnover: v(k.turnover),
+        pct_change: v(k.pct_change), change: v(k.change), amplitude: v(k.amplitude),
+        volume_ratio: v(k.volume_ratio),
+        main_net_inflow: v(k.main_net_inflow),
+        super_large_net_inflow: v(k.super_large_net_inflow),
+        large_net_inflow: v(k.large_net_inflow),
+        medium_net_inflow: v(k.medium_net_inflow),
+        small_net_inflow: v(k.small_net_inflow),
+        macd_dif: v(k.macd_dif), macd_dea: v(k.macd_dea), macd_hist: v(k.macd_hist),
+        ma5: v(k.ma5), ma10: v(k.ma10), ma20: v(k.ma20), ma30: v(k.ma30),
+        rsi6: v(k.rsi6), rsi12: v(k.rsi12), rsi14: v(k.rsi14), rsi24: v(k.rsi24),
+        kdj_k: v(k.kdj_k), kdj_d: v(k.kdj_d), kdj_j: v(k.kdj_j),
+        bias5: v(k.bias5), bias10: v(k.bias10), bias20: v(k.bias20),
+      }));
+      if (rows.length < 60) { done++; continue; }
+
+      let info = { symbol: code, name: data.stock?.name || code, industry: '', list_date: null, float_market_cap: null, total_market_cap: null };
+      try {
+        const ires = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
+        const idata = await ires.json();
+        if (!idata.error) info = { ...info, ...idata };
+      } catch (e) { console.warn('获取股票信息失败:', code, e); }
+
+      // OBV 预计算（引擎复用）
+      if (!rows.__obv) {
+        const obv = [0];
+        let val = 0;
+        for (let j = 1; j < rows.length; j++) {
+          const c = v(rows[j].close), pc = v(rows[j - 1].close);
+          const vol = v(rows[j].volume) || 0;
+          if (c != null && pc != null && vol > 0) {
+            if (c > pc) val += vol;
+            else if (c < pc) val -= vol;
+          }
+          obv.push(val);
+        }
+        rows.__obv = obv;
+      }
+
+      // 入场信号
+      const entryIdx = [];
+      let sellIdxSet = null;
+      if (params.sigMode === 'model') {
+        const sigs = computeSignalsDual(rows, DEFAULT_WEIGHTS, DEFAULT_WEIGHTS_SELL, info);
+        sigs.forEach(sg => {
+          if (sg.type === 'buy') entryIdx.push(sg.t);
+        });
+        if (params.useSellSig) {
+          sellIdxSet = new Set();
+          sigs.forEach(sg => { if (sg.type === 'sell') sellIdxSet.add(sg.t); });
+        }
+      } else {
+        const th = params.ruleDrop / 100;
+        for (let t = 6; t < rows.length; t++) {
+          const c0 = v(rows[t].close), c5 = v(rows[t - 5].close);
+          if (c0 == null || c5 == null || c5 <= 0) continue;
+          const ret = c0 / c5 - 1;
+          if (ret > -th) continue;
+          if (params.ruleYang) {
+            const pct = v(rows[t].pct_change);
+            if (pct == null || pct <= 0) continue;
+          }
+          entryIdx.push(t);
+        }
+      }
+
+      if (entryIdx.length) {
+        perStock.push({ symbol: code, name: info.name, rows, entryIdx, sellIdxSet });
+      }
+    } catch (e) {
+      statusEl.textContent += ` ${code}出错: ${e.message}`;
+    }
+    done++;
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  btn.disabled = false;
+  btn.textContent = '开始策略回测';
+
+  if (!perStock.length) {
+    statusEl.textContent = '所选股票均无信号（信号稀少或数据不足）';
+    return;
+  }
+
+  const result = simulateStrategy(perStock, params);
+  if (!result) {
+    statusEl.textContent = '没有可成交的交易（信号过少或资金不足）';
+    return;
+  }
+
+  statusEl.textContent = `完成：${result.stats.n} 笔交易`;
+  renderResults(result, params, perStock);
+}
+
+// ============ 结果渲染 ============
+function renderResults(result, params, perStock) {
+  const { trades, eq, bq, lab, stats } = result;
+  const area = document.getElementById('resultArea');
+  const fmtPct = (x, d = 2) => (x == null ? '-' : (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%');
+  const fmtMoney = x => (x == null ? '-' : (x >= 0 ? '+' : '') + x.toFixed(0));
+
+  const chips = `
+    <div class="stat-chips">
+      <div class="chip"><span class="k">交易次数</span><span class="v">${stats.n}</span></div>
+      <div class="chip"><span class="k">胜率</span><span class="v ${stats.winRate >= 0.5 ? 'up' : 'down'}">${(stats.winRate * 100).toFixed(1)}%</span></div>
+      <div class="chip"><span class="k">盈亏比</span><span class="v">${stats.plr == null ? '-' : stats.plr.toFixed(2)}</span></div>
+      <div class="chip"><span class="k">单笔均收益</span><span class="v ${stats.avgReturnPct >= 0 ? 'up' : 'down'}">${fmtPct(stats.avgReturnPct)}</span></div>
+      <div class="chip"><span class="k">总收益率</span><span class="v ${stats.totalReturn >= 0 ? 'up' : 'down'}">${fmtPct(stats.totalReturn)}</span></div>
+      <div class="chip"><span class="k">年化收益率</span><span class="v ${stats.annualReturn == null ? '' : (stats.annualReturn >= 0 ? 'up' : 'down')}">${stats.annualReturn == null ? '-' : fmtPct(stats.annualReturn)}</span></div>
+      <div class="chip"><span class="k">最大回撤</span><span class="v down">${(stats.maxDrawdown * 100).toFixed(1)}%</span></div>
+      <div class="chip"><span class="k">平均持仓天数</span><span class="v">${stats.avgHold.toFixed(1)}</span></div>
+      <div class="chip"><span class="k">总手续费</span><span class="v">${stats.totalFee.toFixed(0)}元</span></div>
+      <div class="chip"><span class="k">等权持有基准</span><span class="v ${stats.benchReturn == null ? '' : (stats.benchReturn >= 0 ? 'up' : 'down')}">${stats.benchReturn == null ? '-' : fmtPct(stats.benchReturn)}</span></div>
+    </div>`;
+
+  // 平仓原因分布
+  const reasonAgg = {};
+  trades.forEach(t => { reasonAgg[t.reason] = (reasonAgg[t.reason] || 0) + 1; });
+  const reasonRows = Object.entries(reasonAgg).map(([k, c]) => `
+    <tr><td>${k}</td><td>${c}</td><td>${((c / trades.length) * 100).toFixed(1)}%</td></tr>`).join('');
+
+  // 分股票统计
+  const byStock = {};
+  trades.forEach(t => {
+    byStock[t.symbol] = byStock[t.symbol] || { symbol: t.symbol, name: t.name, list: [] };
+    byStock[t.symbol].list.push(t);
+  });
+  const stockRows = Object.values(byStock).map(st => {
+    const l = st.list;
+    const wins = l.filter(t => t.netPnl > 0);
+    const pnl = l.reduce((s, t) => s + t.netPnl, 0);
+    const r = l.reduce((s, t) => s + t.returnPct, 0) / l.length;
+    return `<tr>
+      <td>${st.symbol} ${st.name || ''}</td>
+      <td>${l.length}</td>
+      <td>${((wins.length / l.length) * 100).toFixed(1)}%</td>
+      <td class="${r >= 0 ? 'up' : 'down'}">${fmtPct(r)}</td>
+      <td class="${pnl >= 0 ? 'up' : 'down'}">${fmtMoney(pnl)}</td>
+    </tr>`;
+  }).join('');
+
+  const conclusion = buildConclusion(stats, reasonAgg);
+
+  const signalInit = () => renderTrades(trades);
+
+  area.innerHTML = `
+    <div class="panel">
+      <h2>策略回测汇总（${perStock.length} 只股票 | 信号来源：${params.sigMode === 'model' ? '模型信号' : '超跌反弹规则'} | 止损${params.stopLoss}% / 止盈${params.takeProfit}% / 持仓上限${params.maxHold || '不限'}日 / 仓位${(params.positionRatio * 100).toFixed(0)}%）</h2>
+      ${chips}
+      <div class="note-box"><strong>结论：</strong>${conclusion}</div>
+    </div>
+
+    <div class="panel">
+      <h2>资金曲线（${stats.firstDate} ~ ${stats.lastDate}）</h2>
+      <div class="hint">红线=策略（含手续费，扣除全部费用后的权益）；绿线=同期等权买入持有全部所选股票组合（当天有数据的股票等权日涨幅复利）</div>
+      <div class="chart-wrap"><div class="chart-canvas-wrap"><canvas id="eqChart"></canvas></div></div>
+    </div>
+
+    <div class="panel">
+      <h2>平仓原因分布</h2>
+      <table>
+        <thead><tr><th>平仓原因</th><th>笔数</th><th>占比</th></tr></thead>
+        <tbody>${reasonRows}</tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>分股票统计</h2>
+      <table>
+        <thead><tr><th>股票</th><th>交易数</th><th>胜率</th><th>单笔均收益</th><th>累计净盈亏(元)</th></tr></thead>
+        <tbody>${stockRows || '<tr><td colspan="5" style="color:#999; text-align:center;">无交易</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>交易明细（分页，按买入日倒序）</h2>
+      <div id="tradeWrap"></div>
+    </div>
+  `;
+
+  drawEquityChart(eq, bq, lab, stats.finalEquity);
+  signalInit();
+}
+
+function buildConclusion(stats, reasonAgg) {
+  const parts = [];
+  if (stats.n < 20) parts.push(`交易仅 ${stats.n} 笔，样本偏少，结论置信度低`);
+  const vsBench = stats.benchReturn == null ? null : stats.totalReturn - stats.benchReturn;
+  if (vsBench != null) {
+    if (vsBench > 0.02) parts.push(`扣除费用后总收益 ${(stats.totalReturn * 100).toFixed(1)}%，跑赢等权持有基准 ${(vsBench * 100).toFixed(1)}pt，策略择时有正贡献`);
+    else if (stats.totalReturn > 0) parts.push(`总收益为正但未跑赢等权持有基准（差 ${(vsBench * 100).toFixed(1)}pt），择时收益不足以覆盖持仓期波动`);
+    else parts.push(`总收益为负（${(stats.totalReturn * 100).toFixed(1)}%），信号命中率高不等于能赚钱——需检查止损设置或信号本身`);
+  } else {
+    parts.push(`总收益率 ${(stats.totalReturn * 100).toFixed(1)}%`);
+  }
+  parts.push(`最大回撤 ${(stats.maxDrawdown * 100).toFixed(1)}%`);
+
+  const stopCnt = Object.keys(reasonAgg).filter(k => k.startsWith('止损')).reduce((s, k) => s + reasonAgg[k], 0);
+  const tpCnt = Object.keys(reasonAgg).filter(k => k.startsWith('止盈')).reduce((s, k) => s + reasonAgg[k], 0);
+  if (stats.n) {
+    const stopPct = stopCnt / stats.n * 100;
+    const tpPct = tpCnt / stats.n * 100;
+    parts.push(`止盈平仓 ${tpPct.toFixed(0)}%、止损平仓 ${stopPct.toFixed(0)}%`);
+    if (stopPct > 40) parts.push('止损触发比例过高，建议放宽止损或收紧入场（提高信号门槛/跌幅阈值）');
+    if (tpPct > 50 && stats.maxDrawdown > 0.2) parts.push('止盈后需等待信号再入场，避免频繁空仓');
+  }
+  return parts.join('；') + '。';
+}
+
+// ============ 资金曲线图 ============
+let _eqChart = null;
+function drawEquityChart(eq, bq, lab, finalEquity) {
+  const canvas = document.getElementById('eqChart');
+  if (!canvas) return;
+  // 降采样：最多 800 点
+  const step = Math.max(1, Math.ceil(lab.length / 800));
+  const sl = [], se = [], sb = [];
+  for (let i = 0; i < lab.length; i += step) {
+    sl.push(lab[i].slice(5)); se.push(eq[i]); sb.push(bq[i]);
+  }
+  if (sl[sl.length - 1] !== lab[lab.length - 1]) { sl.push(lab[lab.length - 1].slice(5)); se.push(eq[eq.length - 1]); sb.push(bq[bq.length - 1]); }
+
+  if (_eqChart) _eqChart.destroy();
+  _eqChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: sl,
+      datasets: [
+        { label: '策略权益', data: se, borderColor: '#e8453c', backgroundColor: 'rgba(232,69,60,0.06)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.1 },
+        { label: '等权持有基准', data: sb, borderColor: '#34a853', backgroundColor: 'rgba(52,168,83,0.05)', fill: false, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
+        y: { title: { display: true, text: '权益(元)' } },
+      },
+    },
+  });
+}
+
+// ============ 交易明细分页 ============
+let _trades = [], _trPage = 1, _trPageSize = 20;
+function renderTrades(trades) {
+  _trPage = 1;
+  _trades = [...trades].sort((a, b) => b.buyDate < a.buyDate ? -1 : b.buyDate > a.buyDate ? 1 : 0);
+  drawTradePage();
+}
+function drawTradePage(dir) {
+  if (dir === -1) _trPage--;
+  else if (dir === 1) _trPage++;
+  const wrap = document.getElementById('tradeWrap');
+  if (!wrap) return;
+  const total = _trades.length;
+  const pages = Math.max(1, Math.ceil(total / _trPageSize));
+  if (_trPage > pages) _trPage = pages;
+  if (_trPage < 1) _trPage = 1;
+  const list = _trades.slice((_trPage - 1) * _trPageSize, _trPage * _trPageSize);
+  const rows = list.map(t => `
+    <tr>
+      <td>${t.symbol} ${t.name || ''}</td>
+      <td>${t.buyDate}<br><span style="color:#999">${fmtNum(t.buyPrice)}</span></td>
+      <td>${t.sellDate}<br><span style="color:#999">${fmtNum(t.sellPrice)}</span></td>
+      <td>${t.holdDays}</td>
+      <td>${t.shares}</td>
+      <td class="${t.returnPct >= 0 ? 'up' : 'down'}">${(t.returnPct * 100).toFixed(2)}%</td>
+      <td class="${t.netPnl >= 0 ? 'up' : 'down'}">${(t.netPnl >= 0 ? '+' : '') + t.netPnl.toFixed(0)}</td>
+      <td>${t.reason}</td>
+    </tr>`).join('');
+  wrap.innerHTML = `
+    <table>
+      <thead><tr><th>股票</th><th>买入日/价</th><th>卖出日/价</th><th>持仓日</th><th>股数</th><th>净收益率</th><th>净盈亏(元)</th><th>平仓原因</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="pager">
+      <button class="secondary" onclick="drawTradePage(-1)" ${_trPage <= 1 ? 'disabled' : ''}>上一页</button>
+      <span class="pg">第 ${_trPage} / ${pages} 页（共 ${total} 条）</span>
+      <button class="secondary" onclick="drawTradePage(1)" ${_trPage >= pages ? 'disabled' : ''}>下一页</button>
+    </div>`;
+}
+
+// ============ 页面初始化 ============
+loadStockList();
+onSigModeChange();
+(function initRangeUI() {
+  const today = new Date();
+  const halfYearAgo = new Date();
+  halfYearAgo.setDate(halfYearAgo.getDate() - 180);
+  document.getElementById('begDate').value = fmtDate(halfYearAgo);
+  document.getElementById('endDate').value = fmtDate(today);
+  updateRangeUI();
+})();
+</script>
+</body>
+</html>

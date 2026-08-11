@@ -55,6 +55,13 @@
   .hint { font-size: 12px; color: #999; margin-top: 4px; }
   .error { color: #e8453c; font-size: 13px; margin-top: 8px; display: none; }
 
+  /* 一句话结论摘要 */
+  .summary-box {
+    background: #e8f0fe; border: 1px solid #c8dcfa; color: #1a3a6b;
+    border-radius: 6px; padding: 8px 14px; font-size: 13px; margin: 8px 0 12px;
+    line-height: 1.7;
+  }
+
   /* 因子权重 */
   .weight-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 20px; }
   .weight-item { display: flex; align-items: center; gap: 10px; }
@@ -246,7 +253,16 @@
 
   <!-- 因子权重 -->
   <div class="panel">
-    <h2>因子权重设置（正分利多，负分利空）</h2>
+    <h2>因子权重设置（正分利多，负分利空 · 买入/卖出各一套独立权重）</h2>
+    <div style="display:flex; gap:16px; padding:2px 0 8px; flex-wrap:wrap;">
+      <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+        <input type="radio" name="wtTab" value="buy" checked onchange="onWtTabChange()"> 买入权重
+      </label>
+      <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+        <input type="radio" name="wtTab" value="sell" onchange="onWtTabChange()"> 卖出权重
+      </label>
+      <span id="wtTabNote" class="hint" style="align-self:center; white-space:nowrap;">当前编辑：买入权重</span>
+    </div>
     <div class="weight-grid" id="weightGrid"></div>
     <div class="actions" style="display:flex; gap:8px; margin-top:12px;">
       <button class="secondary" onclick="resetWeights()">恢复默认</button>
@@ -287,7 +303,7 @@ const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome
 const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
 const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
 
-// 基础工具 v/clamp/fmtNum/fmtWan/esc 与 12大因子评分引擎已抽至 predict-engine.js
+// 基础工具 v/clamp/fmtNum/fmtWan/esc 与 13大因子评分引擎已抽至 predict-engine.js
 function fmtDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -376,8 +392,26 @@ function buildRangeParams() {
   return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()), lmt: tradingDays };
 }
 
-// ============ 12大因子评分引擎已抽至 predict-engine.js（factorMainCap/factorVolume/.../scoreAt/computeSignals） ============
+// ============ 13大因子评分引擎已抽至 predict-engine.js（factorMainCap/factorVolume/.../scoreAt/computeSignals） ============
 
+// ============ 权重（买入/卖出两套独立） ============
+let _wtTab = 'buy';
+const _wtBuf = {
+  buy: { ...DEFAULT_WEIGHTS },
+  sell: { ...DEFAULT_WEIGHTS_SELL },
+};
+function getWtTab() {
+  const el = document.querySelector('input[name="wtTab"]:checked');
+  return el ? el.value : 'buy';
+}
+function onWtTabChange() {
+  _wtBuf[_wtTab] = getWeights();      // 保存当前 tab 控件值
+  _wtTab = getWtTab();                // 切换
+  syncGridToBuf();                    // 控件恢复为切换后 tab 的权重
+  const note = document.getElementById('wtTabNote');
+  if (note) note.textContent = `当前编辑：${_wtTab === 'sell' ? '卖出权重' : '买入权重'}`;
+  schedulePredict();
+}
 // 当前权重（从页面控件读取）
 function getWeights() {
   const w = {};
@@ -387,11 +421,19 @@ function getWeights() {
   });
   return w;
 }
-function resetWeights() {
-  Object.entries(DEFAULT_WEIGHTS).forEach(([k, val]) => {
-    const el = document.getElementById('w_' + k);
-    if (el) { el.value = val; document.getElementById('wv_' + k).textContent = val; }
+function getWeightsByTab(tab) {
+  return { ...(_wtBuf[tab] || DEFAULT_WEIGHTS) };
+}
+function syncGridToBuf() {
+  const w = _wtBuf[_wtTab];
+  FACTOR_DEFS.forEach(f => {
+    const el = document.getElementById('w_' + f.key);
+    if (el) { el.value = w[f.key]; document.getElementById('wv_' + f.key).textContent = w[f.key]; }
   });
+}
+function resetWeights() {
+  _wtBuf[_wtTab] = { ...(_wtTab === 'sell' ? DEFAULT_WEIGHTS_SELL : DEFAULT_WEIGHTS) };
+  syncGridToBuf();
   applyWeights();
 }
 function applyWeights() {
@@ -408,6 +450,7 @@ function initWeightGrid() {
              title="${f.desc}">
       <span class="val" id="wv_${f.key}">${DEFAULT_WEIGHTS[f.key]}</span>
     </div>`).join('');
+  syncGridToBuf();
 }
 let _predictTimer = null;
 function schedulePredict() {
@@ -729,31 +772,34 @@ function buildStrategyAdvice(rows, i, L) {
   return { volScene, macdScene, volRatio: vr, advice, openPlans, pricePlans };
 }
 
-// ============ 主预测流程 ============
+// ============ 主预测流程（买入/卖出双向独立权重） ============
 function runPrediction(rows, info) {
-  const weights = getWeights();
+  _wtBuf[_wtTab] = getWeights();          // 保存当前 tab 控件值
+  const wBuy = getWeightsByTab('buy');
+  const wSell = getWeightsByTab('sell');
   const i = rows.length - 1;
-  const res = scoreAt(rows, i, weights, info);
-  const S = res.S;
-  const verdict = verdictOf(S);
-  const P_up = clamp(Math.round(50 + S / 2), 5, 95);
+  const res = scoreAtDual(rows, i, wBuy, wSell, info);
+  const Sbuy = res.Sbuy, Ssell = res.Ssell;
+  const vBuy = verdictOf(Sbuy), vSell = verdictOf(Ssell);
+  const P_up = clamp(Math.round(50 + Sbuy / 2), 5, 95);
   const P_down = 100 - P_up;
   const L = calcLevels(rows, i);
   const last = rows[i];
 
-  // 历史信号
-  const signals = computeSignals(rows, weights, info);
+  // 历史信号（双向独立判定）
+  const signals = computeSignalsDual(rows, wBuy, wSell, info);
   const stats = signalStats(rows, signals);
 
   // 明日走势形态预测 + 操作策略
   const trend = predictTrendScores(rows, i);
   const adv = buildStrategyAdvice(rows, i, L);
 
-  // 因子条（点击因子行弹窗查看打分依据）
-  window.__factorParts = res.parts;
+  // 因子条（点击因子行弹窗查看打分依据）：权重按当前编辑 tab 展示
+  const activeWeights = _wtTab === 'sell' ? wSell : wBuy;
+  window.__factorParts = res.parts.map(p => ({ ...p, weight: activeWeights[p.key] || 0 }));
   const factorHtml = res.parts.map(p => {
     const sc = p.score;
-    const w = p.weight;
+    const w = activeWeights[p.key] || 0;
     const pos = sc >= 0;
     const width = Math.max(2, Math.abs(sc));
     const fillCss = pos
@@ -790,15 +836,37 @@ function runPrediction(rows, info) {
   }
   const buyRate = stats.buyCnt ? (stats.buyWin / stats.buyCnt * 100).toFixed(0) : '-';
   const sellRate = stats.sellCnt ? (stats.sellWin / stats.sellCnt * 100).toFixed(0) : '-';
+  const buyTouchRate = stats.buyCnt ? (stats.buyTouch / stats.buyCnt * 100).toFixed(0) : '-';
+  const sellTouchRate = stats.sellCnt ? (stats.sellTouch / stats.sellCnt * 100).toFixed(0) : '-';
+
+  // 一句话结论摘要（通俗版）：综合买卖双向评分与短线涨跌幅，给用户最直接的判断
+  const mom = window.__factorParts ? (window.__factorParts.find(p => p.key === 'mom5') || {}).score : null;
+  const verdict = vBuy.action === vSell.action ? vBuy.action
+    : (Math.abs(Sbuy) >= Math.abs(Ssell) ? vBuy.action : vSell.action);
+  let summaryTxt = '';
+  if (verdict.includes('买入')) {
+    summaryTxt = '综合信号偏多，短线以低吸/持股为主；重点关注回踩支撑企稳后的买入机会，冲高遇阻先减仓';
+  } else if (verdict.includes('卖出')) {
+    summaryTxt = '综合信号偏空，短线以减仓/回避为主；反弹至压力位分批减仓，不要逆势追高';
+  } else {
+    summaryTxt = '多空信号不明显，短线以观望为主；等放量突破压力位或缩量回踩企稳后再决策';
+  }
+  if (mom != null && mom >= 50) summaryTxt = '近期跌幅较深，属于超跌反弹机会，风险收益比较佳，可轻仓分批低吸';
+  else if (mom != null && mom <= -50) summaryTxt = '近期涨幅过大，短线回调压力大，不宜追高，持仓者可逢高减仓';
 
   document.getElementById('resultArea').innerHTML = `
     <div class="panel">
       <h2>下个交易日买卖点预测（${info.name || ''} ${info.symbol || ''} | 预测日: ${window.__predictDate}）</h2>
-      <div class="hint">基于最新收盘日 ${last.date} 的12大因子综合评分，正分偏多、负分偏空</div>
+      <div class="hint">基于最新收盘日 ${last.date} 的13大因子综合评分（含新增"短期涨跌幅"超跌反弹/超涨回落因子），买入/卖出各一套独立权重；正分偏多、负分偏空</div>
+      <div class="summary-box">💡 ${summaryTxt}</div>
       <div class="verdict">
-        <div class="verdict-badge" style="background:${verdict.color}">
-          <div class="action">${verdict.action}</div>
-          <div class="sub">${verdict.sub} | 综合评分 ${S >= 0 ? '+' : ''}${S.toFixed(1)}</div>
+        <div class="verdict-badge" style="background:${vBuy.color}">
+          <div class="action">${vBuy.action}</div>
+          <div class="sub">买入向评分 ${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} · ${vBuy.sub}</div>
+        </div>
+        <div class="verdict-badge" style="background:${vSell.color}">
+          <div class="action">${vSell.action}</div>
+          <div class="sub">卖出向评分 ${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)} · ${vSell.sub}</div>
         </div>
         <div class="verdict-score">
           <div class="score-line">
@@ -811,7 +879,7 @@ function runPrediction(rows, info) {
             <div class="bar"><div class="down" style="width:${P_down}%"></div></div>
             <span class="value down">${P_down}%</span>
           </div>
-          <div class="score-summary">概率由12因子加权评分换算：买入概率=上涨概率，卖出概率=下跌概率；评分区间 ±100，|评分|越大信号越强</div>
+          <div class="score-summary">评分越高越倾向买入、越低越倾向卖出（区间 ±100）。实际短线操作以"5日盘中触及+2%（买）/ -2%（卖）"为有效口径，回测命中率见下方K线信号区</div>
         </div>
       </div>
 
@@ -821,18 +889,18 @@ function runPrediction(rows, info) {
           <div class="tm"><span class="k">回踩支撑</span><span class="v">${L.s1Name} ${fmtNum(L.s1)}${L.s2 ? '（下档 ' + L.s2Name + ' ' + fmtNum(L.s2) + '）' : ''}</span></div>
           <div class="tm"><span class="k">买入区间</span><span class="v">${fmtNum(L.s2 || L.s1)} ~ ${fmtNum(Math.min(last.close, L.s1))}</span></div>
           <div class="tm"><span class="k">突破追高</span><span class="v">放量站上 ${L.r1Name} ${fmtNum(L.r1)}</span></div>
-          <div class="advice">${S >= 15 ? '分批买入' : (S > -5 ? '仅回踩企稳后轻仓' : '暂不买入')}：每档1/3，跌破止损位离场</div>
+          <div class="advice">${Sbuy >= 15 ? '分批买入' : (Sbuy > -5 ? '仅回踩企稳后轻仓' : '暂不买入')}：每档1/3，跌破止损位离场</div>
         </div>
         <div class="timing-card sell">
           <h3>建议卖出时机</h3>
           <div class="tm"><span class="k">上方压力</span><span class="v">${L.r1Name} ${fmtNum(L.r1)}${L.r2 ? '（上档 ' + L.r2Name + ' ' + fmtNum(L.r2) + '）' : ''}</span></div>
           <div class="tm"><span class="k">卖出区间</span><span class="v">${fmtNum(L.r1)} ~ ${fmtNum(L.r2 || Math.min(L.hi20 || L.r1 * 1.02, L.r1 * 1.05))}</span></div>
           <div class="tm"><span class="k">止损位</span><span class="v">${fmtNum(L.s1 * 0.97)}</span></div>
-          <div class="advice">${timingAdvice(S, L)}；冲高分批止盈，收益落袋为安</div>
+          <div class="advice">${timingAdvice(Ssell, L)}；冲高分批止盈，收益落袋为安</div>
         </div>
       </div>
 
-      <h2 style="margin-top:6px;">因子明细（${S >= 0 ? '+' : ''}${S.toFixed(1)} 分）</h2>
+      <h2 style="margin-top:6px;">因子明细（买入向 ${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} 分 / 卖出向 ${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)} 分）</h2>
       ${factorHtml}
     </div>
 
@@ -863,7 +931,7 @@ function runPrediction(rows, info) {
       <div class="strat-scene">
         <span class="scene-chip">量能：${adv.volScene}${adv.volRatio != null ? '（量比 ' + adv.volRatio.toFixed(2) + '）' : ''}</span>
         <span class="scene-chip">MACD：${adv.macdScene}</span>
-        <span class="scene-chip">综合评分 ${S >= 0 ? '+' : ''}${S.toFixed(1)}（${verdict.action}）</span>
+        <span class="scene-chip">综合评分 买入${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} / 卖出${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}</span>
       </div>
       <h3 class="strat-title">量能 · MACD 动能</h3>
       <ul class="strat-list">
@@ -882,9 +950,10 @@ function runPrediction(rows, info) {
     <div class="panel">
       <h2>K线与买卖信号（${rows.length}个交易日）</h2>
       <div class="stats">
-        <div class="stat-item"><span class="k">买入信号命中率</span>：<strong class="up">${buyRate}%</strong>（${stats.buyCnt}次，5日内上涨）</div>
-        <div class="stat-item"><span class="k">卖出信号命中率</span>：<strong class="down">${sellRate}%</strong>（${stats.sellCnt}次，5日内下跌）</div>
-        <div class="stat-item"><span class="k">区间内信号</span>：买入 ${stats.buyCnt} 次 / 卖出 ${stats.sellCnt} 次</div>
+        <div class="stat-item"><span class="k">买入信号·5日盘中触及+2%</span>：<strong class="up">${buyTouchRate}%</strong>（${stats.buyCnt}次）</div>
+        <div class="stat-item"><span class="k">买入信号·5日收盘上涨</span>：<strong class="up">${buyRate}%</strong></div>
+        <div class="stat-item"><span class="k">卖出信号·5日盘中触及-2%</span>：<strong class="down">${sellTouchRate}%</strong>（${stats.sellCnt}次）</div>
+        <div class="stat-item"><span class="k">卖出信号·5日收盘下跌</span>：<strong class="down">${sellRate}%</strong></div>
       </div>
       <div class="chart-wrap">
         <div class="legend">
@@ -907,38 +976,40 @@ function runPrediction(rows, info) {
     </div>
   `;
 
-  drawSignalChart(rows, signals, S, verdict);
+  drawSignalChart(rows, signals, Sbuy, vBuy);
 }
 
 // ============ 预测落库与复盘 ============
 function buildPredictionPayload(rows, info) {
-  const weights = getWeights();
+  _wtBuf[_wtTab] = getWeights();          // 保存当前 tab 控件值
+  const wBuy = getWeightsByTab('buy');
+  const wSell = getWeightsByTab('sell');
   const i = rows.length - 1;
-  const res = scoreAt(rows, i, weights, info);
-  const S = res.S;
-  const verdict = verdictOf(S);
-  const P_up = clamp(Math.round(50 + S / 2), 5, 95);
+  const res = scoreAtDual(rows, i, wBuy, wSell, info);
+  const Sbuy = res.Sbuy, Ssell = res.Ssell;
+  const verdict = verdictOf(Sbuy);
+  const P_up = clamp(Math.round(50 + Sbuy / 2), 5, 95);
   const L = calcLevels(rows, i);
   const last = rows[i];
   const trend = predictTrendScores(rows, i);
   const adv = buildStrategyAdvice(rows, i, L);
   let actionCode = 'hold';
-  if (S >= 15) actionCode = 'buy';
-  else if (S >= 5) actionCode = 'watch_buy';
-  else if (S > -5) actionCode = 'hold';
-  else if (S > -15) actionCode = 'watch_sell';
+  if (Sbuy >= 15) actionCode = 'buy';
+  else if (Sbuy >= 5) actionCode = 'watch_buy';
+  else if (Sbuy > -5) actionCode = 'hold';
+  else if (Sbuy > -15) actionCode = 'watch_sell';
   else actionCode = 'sell';
   return {
     symbol: info.symbol, name: info.name,
     based_date: last.date,
     predict_date: window.__predictDate,
     action: verdict.action, action_code: actionCode,
-    score: S, prob_up: P_up, close: last.close,
+    score: Sbuy, sell_score: Ssell, prob_up: P_up, close: last.close,
     support_price: L.s1, support2_price: L.s2,
     resistance_price: L.r1, resistance2_price: L.r2,
     stop_loss: L.s1 ? Math.round(L.s1 * 0.97 * 100) / 100 : null,
-    factors: res.parts.map(p => ({ key: p.key, name: p.name, score: p.score, weight: p.weight, desc: p.desc })),
-    weights: weights,
+    factors: res.parts.map(p => ({ key: p.key, name: p.name, score: p.score, weight: wBuy[p.key] || 0, desc: p.desc })),
+    weights: { buy: wBuy, sell: wSell },
     trend: trend.main.key,
     trend_probs: trend.probs,
     trend_strategy: `主预测走势：${trend.main.name}(${trend.main.prob}%)，次选${trend.second.name}(${trend.second.prob}%)。量能${adv.volScene}、MACD动能${adv.macdScene}。`

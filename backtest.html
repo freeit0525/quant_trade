@@ -105,6 +105,7 @@
 <script src="ui-modal.js"></script>
 <script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
+<script src="predict-engine.js"></script>
 </head>
 <body>
 <div class="container">
@@ -648,6 +649,11 @@ async function fetchStock(syncFirst = false) {
         volume: +k.volume, amount: +k.amount, amplitude: +k.amplitude, pctChange: +k.pct_change, change: +k.change, turnover: +k.turnover,
         volumeRatio: k.volume_ratio != null ? +k.volume_ratio : null
       };
+      // 预测引擎（predict-engine.js）需要的因子字段：主力资金/MA/RSI/KDJ/BIAS（DB 基于全量历史算好）
+      o.main_net_inflow = k.main_net_inflow != null ? +k.main_net_inflow : null;
+      ['ma5', 'ma10', 'ma20', 'ma30', 'rsi6', 'rsi12', 'rsi14', 'rsi24', 'kdj_k', 'kdj_d', 'kdj_j', 'bias5', 'bias10', 'bias20'].forEach(f => {
+        o[f] = k[f] != null ? +k[f] : null;
+      });
       // 保留数据库基于全量历史算好的 MACD（各参数组），优先直接使用
       MACD_SUFFIXES.forEach(s => {
         o[`macd_dif${s}`] = k[`macd_dif${s}`] != null ? +k[`macd_dif${s}`] : null;
@@ -1352,6 +1358,62 @@ function signalVr(ctx) {
 }
 
 // 策略分发表：strategy 字符串 → 对应的信号生成函数
+// ============ 预测模型信号（复用 predict-engine.js 13因子引擎，与预测页同权重） ============
+// 把 backtest 的 ohlc 转为预测引擎 rows（字段名对齐 + 附加 OBV 序列）
+function buildPredictRows(ohlc) {
+  const rows = ohlc.map(k => ({
+    date: k.date, open: k.open, close: k.close, high: k.high, low: k.low,
+    volume: k.volume, amount: k.amount, turnover: k.turnover,
+    pct_change: k.pctChange != null ? k.pctChange : null,
+    change: k.change, amplitude: k.amplitude, volume_ratio: k.volumeRatio,
+    main_net_inflow: k.main_net_inflow,
+    ma5: k.ma5, ma10: k.ma10, ma20: k.ma20, ma30: k.ma30,
+    rsi6: k.rsi6, rsi12: k.rsi12, rsi14: k.rsi14, rsi24: k.rsi24,
+    kdj_k: k.kdj_k, kdj_d: k.kdj_d, kdj_j: k.kdj_j,
+    bias5: k.bias5, bias10: k.bias10, bias20: k.bias20,
+    macd_dif: k.macd_dif, macd_dea: k.macd_dea, macd_hist: k.macd_hist,
+  }));
+  const obv = [0]; let val = 0;
+  for (let j = 1; j < rows.length; j++) {
+    const c = v(rows[j].close), pc = v(rows[j - 1].close), vol = v(rows[j].volume) || 0;
+    if (c != null && pc != null && vol > 0) { if (c > pc) val += vol; else if (c < pc) val -= vol; }
+    obv.push(val);
+  }
+  rows.__obv = obv;
+  return rows;
+}
+
+// 策略：预测模型-13因子买卖点（买入阈值25+跃升8，卖出-25+回落8，权重同预测页默认）
+function signalPredictModel(ctx) {
+  const { n, signals, sellSource, ohlc } = ctx;
+  const rows = buildPredictRows(ohlc);
+  const info = { symbol: (window.__backtestStock || {}).code || '', name: (window.__backtestStock || {}).name || '', list_date: null, float_market_cap: null, total_market_cap: null, industry: '' };
+  const sigs = computeSignalsDual(rows, DEFAULT_WEIGHTS, DEFAULT_WEIGHTS_SELL, info);
+  sigs.forEach(sg => {
+    if (sg.t >= n) return;
+    if (sg.type === 'buy') signals[sg.t] = 'buy';
+    else { signals[sg.t] = 'sell'; sellSource[sg.t] = 'orig'; }
+  });
+}
+
+// 策略：超跌反弹规则——近5日累计跌≥8%且当日收阳买入；近5日累计涨≥12%卖出
+function signalOversoldRule(ctx) {
+  const { n, signals, sellSource, closes, ohlc } = ctx;
+  for (let i = 6; i < n; i++) {
+    if (closes[i] == null || closes[i - 5] == null || closes[i - 5] <= 0) continue;
+    const ret5 = closes[i] / closes[i - 5] - 1;
+    if (ret5 <= -0.08) {
+      const k = ohlc[i];
+      const pct = k && k.pctChange != null ? k.pctChange
+        : (k && k.close != null && k.open != null && k.open > 0 ? (k.close / k.open - 1) * 100 : 0);
+      if (pct > 0) signals[i] = 'buy';
+    } else if (ret5 >= 0.12) {
+      signals[i] = 'sell';
+      sellSource[i] = 'orig';
+    }
+  }
+}
+
 const STRATEGY_HANDLERS = {
   rate: signalRate,
   cross: signalCross,
@@ -1375,7 +1437,9 @@ const STRATEGY_HANDLERS = {
   vwap: signalVwap,
   volShrink: signalVolShrink,
   volDivergence: signalVolDivergence,
-  vr: signalVr
+  vr: signalVr,
+  predictModel: signalPredictModel,
+  oversoldRule: signalOversoldRule
 };
 
 // 多头空仓补买适用的策略：以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略
@@ -2322,7 +2386,9 @@ const STRATEGY_DESC = {
   vwap: '<strong>VWAP量价均价策略</strong>：计算累计成交量加权均价。收盘价上穿VWAP(多头占优)买入；下穿VWAP(空头占优)卖出。机构常用成交均价作为多空分界。',
   volShrink: '<strong>地量见地价策略</strong>：成交量萎缩到均量×阈值以下(地量，抛压枯竭)且当日收阳(企稳)买入；放量收阴(可能见顶)卖出。适合抄底。',
   volDivergence: '<strong>量价背离策略</strong>：价格创前N日新低但成交量未同步创新低(底背离，有资金承接)买入；价格创前N日新高但成交量未同步放大(顶背离，动能衰竭)卖出。',
-  vr: '<strong>VR成交量变异率策略</strong>：VR=(上涨日量+0.5×平盘日量)/(下跌日量+0.5×平盘日量)×100。VR从低位区上穿(超卖回升)买入；从高位区下穿(超买回落)卖出。'
+  vr: '<strong>VR成交量变异率策略</strong>：VR=(上涨日量+0.5×平盘日量)/(下跌日量+0.5×平盘日量)×100。VR从低位区上穿(超卖回升)买入；从高位区下穿(超买回落)卖出。',
+  predictModel: '<strong>预测模型-13因子买卖点</strong>：复用预测引擎（与 predict.html 同权重）。综合评分 Sbuy≥25 且较前日跃升超过8 → <strong style="color:#e8453c">买入</strong>；Ssell≤-25 且较前日回落超过8 → <strong style="color:#34a853">卖出</strong>。13因子含短期涨跌幅/乖离率/KDJ/RSI/量能/主力资金等。适合结合本页分批加仓/波段/止损止盈使用。',
+  oversoldRule: '<strong>超跌反弹规则</strong>：近5日累计跌幅≥8% 且当日收阳 → <strong style="color:#e8453c">买入</strong>（超跌企稳）；近5日累计涨幅≥12% → <strong style="color:#34a853">卖出</strong>（短线获利了结）。'
 };
 
 function updateStrategyDesc() {
