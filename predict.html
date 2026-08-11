@@ -177,7 +177,7 @@
 <script src="ui-modal.js"></script>
 <script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
-<script src="predict-engine.js"></script>
+<script src="predict-engine.js?v=20260811"></script>
 </head>
 <body>
 <div class="container">
@@ -518,7 +518,7 @@ function showFactorModal(key) {
   mask.style.display = 'flex';
 }
 
-// 概率与结论 verdictOf / 支撑压力 calcLevels / 时机建议 timingAdvice / 历史信号 computeSignals+signalStats 已抽至 predict-engine.js
+// 概率与结论 opVerdict / 支撑压力 calcLevels / 时机建议 timingAdvice / 历史信号 computeSignals+signalStats 已抽至 predict-engine.js
 
 // ============ 明日走势形态预测（9种形态概率推断） ============
 // 9 种形态按 偏多→中性→偏空 排列，与后端 classify_trend 判定规则一致
@@ -780,7 +780,8 @@ function runPrediction(rows, info) {
   const i = rows.length - 1;
   const res = scoreAtDual(rows, i, wBuy, wSell, info);
   const Sbuy = res.Sbuy, Ssell = res.Ssell;
-  const vBuy = verdictOf(Sbuy), vSell = verdictOf(Ssell);
+  // 综合操作判定：输出单一操作建议（加仓/持有/观望/减仓/卖出）
+  const op = opVerdict(Sbuy, Ssell);
   const P_up = clamp(Math.round(50 + Sbuy / 2), 5, 95);
   const P_down = 100 - P_up;
   const L = calcLevels(rows, i);
@@ -839,17 +840,19 @@ function runPrediction(rows, info) {
   const buyTouchRate = stats.buyCnt ? (stats.buyTouch / stats.buyCnt * 100).toFixed(0) : '-';
   const sellTouchRate = stats.sellCnt ? (stats.sellTouch / stats.sellCnt * 100).toFixed(0) : '-';
 
-  // 一句话结论摘要（通俗版）：综合买卖双向评分与短线涨跌幅，给用户最直接的判断
+  // 一句话结论摘要（通俗版）：综合买卖双向评分给用户最直接的"下个交易日操作建议"
   const mom = window.__factorParts ? (window.__factorParts.find(p => p.key === 'mom5') || {}).score : null;
-  const verdict = vBuy.action === vSell.action ? vBuy.action
-    : (Math.abs(Sbuy) >= Math.abs(Ssell) ? vBuy.action : vSell.action);
   let summaryTxt = '';
-  if (verdict.includes('买入')) {
-    summaryTxt = '综合信号偏多，短线以低吸/持股为主；重点关注回踩支撑企稳后的买入机会，冲高遇阻先减仓';
-  } else if (verdict.includes('卖出')) {
-    summaryTxt = '综合信号偏空，短线以减仓/回避为主；反弹至压力位分批减仓，不要逆势追高';
+  if (op.code === 'add') {
+    summaryTxt = '综合信号偏多，下个交易日可加仓/低吸；重点关注回踩支撑企稳后的买入机会，冲高遇阻先减仓';
+  } else if (op.code === 'hold') {
+    summaryTxt = '趋势偏多，下个交易日以持股为主；放量突破压力位可考虑加仓，跌破支撑位则减仓防御';
+  } else if (op.code === 'watch') {
+    summaryTxt = '多空信号不明显，下个交易日以观望为主；等放量突破压力位或缩量回踩企稳后再决策';
+  } else if (op.code === 'trim') {
+    summaryTxt = '综合信号偏空，下个交易日以减仓/回避为主；反弹至压力位分批减仓，不要逆势追高';
   } else {
-    summaryTxt = '多空信号不明显，短线以观望为主；等放量突破压力位或缩量回踩企稳后再决策';
+    summaryTxt = '偏空信号强，下个交易日以卖出离场为主；反弹至压力位分批清仓，不要恋战';
   }
   if (mom != null && mom >= 50) summaryTxt = '近期跌幅较深，属于超跌反弹机会，风险收益比较佳，可轻仓分批低吸';
   else if (mom != null && mom <= -50) summaryTxt = '近期涨幅过大，短线回调压力大，不宜追高，持仓者可逢高减仓';
@@ -857,18 +860,24 @@ function runPrediction(rows, info) {
   document.getElementById('resultArea').innerHTML = `
     <div class="panel">
       <h2>下个交易日买卖点预测（${info.name || ''} ${info.symbol || ''} | 预测日: ${window.__predictDate}）</h2>
-      <div class="hint">基于最新收盘日 ${last.date} 的13大因子综合评分（含新增"短期涨跌幅"超跌反弹/超涨回落因子），买入/卖出各一套独立权重；正分偏多、负分偏空</div>
+      <div class="hint">基于最新收盘日 ${last.date} 的13大因子综合评分（含"短期涨跌幅"超跌反弹/超涨回落因子），买入/卖出各一套独立权重；综合双向评分输出下个交易日操作建议</div>
       <div class="summary-box">💡 ${summaryTxt}</div>
       <div class="verdict">
-        <div class="verdict-badge" style="background:${vBuy.color}">
-          <div class="action">${vBuy.action}</div>
-          <div class="sub">买入向评分 ${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} · ${vBuy.sub}</div>
-        </div>
-        <div class="verdict-badge" style="background:${vSell.color}">
-          <div class="action">${vSell.action}</div>
-          <div class="sub">卖出向评分 ${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)} · ${vSell.sub}</div>
+        <div class="verdict-badge" style="background:${op.color}">
+          <div class="action">${op.action}</div>
+          <div class="sub">${op.sub} · 综合双向评分</div>
         </div>
         <div class="verdict-score">
+          <div class="score-line">
+            <span class="lab">买入向评分</span>
+            <div class="bar"><div class="up" style="width:${clamp(Sbuy, 0, 100)}%"></div></div>
+            <span class="value up">${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)}</span>
+          </div>
+          <div class="score-line">
+            <span class="lab">卖出向评分</span>
+            <div class="bar"><div class="down" style="width:${clamp(-Ssell, 0, 100)}%"></div></div>
+            <span class="value down">${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}</span>
+          </div>
           <div class="score-line">
             <span class="lab">次日上涨概率</span>
             <div class="bar"><div class="up" style="width:${P_up}%"></div></div>
@@ -879,7 +888,7 @@ function runPrediction(rows, info) {
             <div class="bar"><div class="down" style="width:${P_down}%"></div></div>
             <span class="value down">${P_down}%</span>
           </div>
-          <div class="score-summary">评分越高越倾向买入、越低越倾向卖出（区间 ±100）。实际短线操作以"5日盘中触及+2%（买）/ -2%（卖）"为有效口径，回测命中率见下方K线信号区</div>
+          <div class="score-summary">操作建议由 13 因子买入/卖出双权重评分综合判定：加仓/持有偏多、减仓/卖出偏空、观望为方向不明。实际短线操作以"5日盘中触及+2%（买）/ -2%（卖）"为有效口径，回测命中率见下方K线信号区</div>
         </div>
       </div>
 
@@ -931,7 +940,7 @@ function runPrediction(rows, info) {
       <div class="strat-scene">
         <span class="scene-chip">量能：${adv.volScene}${adv.volRatio != null ? '（量比 ' + adv.volRatio.toFixed(2) + '）' : ''}</span>
         <span class="scene-chip">MACD：${adv.macdScene}</span>
-        <span class="scene-chip">综合评分 买入${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} / 卖出${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}</span>
+        <span class="scene-chip">操作建议：<strong>${op.action}</strong>（买入向${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)} / 卖出向${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}）</span>
       </div>
       <h3 class="strat-title">量能 · MACD 动能</h3>
       <ul class="strat-list">
@@ -976,7 +985,7 @@ function runPrediction(rows, info) {
     </div>
   `;
 
-  drawSignalChart(rows, signals, Sbuy, vBuy);
+  drawSignalChart(rows, signals, Sbuy, op);
 }
 
 // ============ 预测落库与复盘 ============
@@ -987,23 +996,18 @@ function buildPredictionPayload(rows, info) {
   const i = rows.length - 1;
   const res = scoreAtDual(rows, i, wBuy, wSell, info);
   const Sbuy = res.Sbuy, Ssell = res.Ssell;
-  const verdict = verdictOf(Sbuy);
+  // 综合操作判定：单一操作建议（加仓/持有/观望/减仓/卖出）→ 落库
+  const op = opVerdict(Sbuy, Ssell);
   const P_up = clamp(Math.round(50 + Sbuy / 2), 5, 95);
   const L = calcLevels(rows, i);
   const last = rows[i];
   const trend = predictTrendScores(rows, i);
   const adv = buildStrategyAdvice(rows, i, L);
-  let actionCode = 'hold';
-  if (Sbuy >= 15) actionCode = 'buy';
-  else if (Sbuy >= 5) actionCode = 'watch_buy';
-  else if (Sbuy > -5) actionCode = 'hold';
-  else if (Sbuy > -15) actionCode = 'watch_sell';
-  else actionCode = 'sell';
   return {
     symbol: info.symbol, name: info.name,
     based_date: last.date,
     predict_date: window.__predictDate,
-    action: verdict.action, action_code: actionCode,
+    action: op.action, action_code: op.code,
     score: Sbuy, sell_score: Ssell, prob_up: P_up, close: last.close,
     support_price: L.s1, support2_price: L.s2,
     resistance_price: L.r1, resistance2_price: L.r2,

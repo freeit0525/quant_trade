@@ -512,15 +512,30 @@ function scoreAtDual(rows, i, weightsBuy, weightsSell, info) {
   return { Sbuy: weightedS(parts, weightsBuy), Ssell: weightedS(parts, weightsSell), parts };
 }
 
-// 概率与结论
-function verdictOf(S) {
-  if (S >= 30) return { action: '建议买入', sub: '可买入（强）', cls: 'up', color: '#e8453c' };
-  if (S >= 15) return { action: '建议买入', sub: '可买入（中）', cls: 'up', color: '#e8453c' };
-  if (S >= 5) return { action: '偏多关注', sub: '谨慎买入', cls: 'up', color: '#e0873c' };
-  if (S > -5) return { action: '观望', sub: '等待方向确认', cls: 'hold', color: '#9e9e9e' };
-  if (S > -15) return { action: '偏空警惕', sub: '谨慎卖出', cls: 'down', color: '#7db45a' };
-  if (S > -30) return { action: '建议卖出', sub: '可卖出（中）', cls: 'down', color: '#34a853' };
-  return { action: '建议卖出', sub: '可卖出（强）', cls: 'down', color: '#34a853' };
+// ============ 综合操作判定（下一个交易日操作建议） ============
+// 核心目标：预测下一个交易日该如何操作。
+// 通过过去的交易日数据（13因子买入/卖出双权重评分 Sbuy/Ssell），输出单一操作建议：
+// 加仓(add) / 持有(hold) / 观望(watch) / 减仓(trim) / 卖出(sell)
+const OP_DEFS = {
+  add:   { action: '加仓',   sub: '偏多信号强，可分批买入', cls: 'up',   color: '#e8453c' },
+  hold:  { action: '持有',   sub: '趋势偏多，持股待涨',     cls: 'up',   color: '#e0873c' },
+  watch: { action: '观望',   sub: '方向不明，等待方向确认', cls: 'hold', color: '#9e9e9e' },
+  trim:  { action: '减仓',   sub: '偏空，分批减仓',         cls: 'down', color: '#7db45a' },
+  sell:  { action: '卖出',   sub: '偏空信号强，清仓离场',   cls: 'down', color: '#34a853' },
+};
+function opVerdict(Sbuy, Ssell) {
+  // 强买：买入向强 + 卖出向不冲突 → 加仓
+  if (Sbuy >= 25 && Ssell >= -10) return { code: 'add', ...OP_DEFS.add };
+  // 中买：买入向较强 + 卖出向无明显空头 → 轻仓加仓
+  if (Sbuy >= 12 && Ssell >= -15) return { code: 'add', action: '加仓', sub: '偏多，可轻仓介入', cls: 'up', color: '#e8453c' };
+  // 偏多：买入向为正 + 卖出向未转空 → 持有
+  if (Sbuy >= 5 && Ssell > -12) return { code: 'hold', ...OP_DEFS.hold };
+  // 强卖：卖出向强 或 买入向极空 → 卖出
+  if (Sbuy <= -25 || Ssell <= -25) return { code: 'sell', ...OP_DEFS.sell };
+  // 偏空：卖出向转空 或 买入向明显为负 → 减仓
+  if (Sbuy <= -12 || Ssell <= -10) return { code: 'trim', ...OP_DEFS.trim };
+  // 其余 → 观望
+  return { code: 'watch', ...OP_DEFS.watch };
 }
 
 // 支撑位 / 压力位

@@ -718,9 +718,10 @@ def save_kline(df: pd.DataFrame, symbol: str, config: DatabaseConfig | None = No
 # 买卖点预测记录 CRUD（含次日自动复盘）
 # ============================================================
 
-# 方向代码 -> 统计用方向分组（观望不计命中）
-_PRED_BUY_CODES = ("buy", "watch_buy")
-_PRED_SELL_CODES = ("sell", "watch_sell")
+# 方向代码 -> 统计用方向分组（持有/观望只记录涨跌不计命中）
+# 2026-08-11 操作建议体系：加仓(add)/持有(hold)/观望(watch)/减仓(trim)/卖出(sell)
+_PRED_BUY_CODES = ("add",)           # 加仓：次日上涨=命中
+_PRED_SELL_CODES = ("trim", "sell")  # 减仓/卖出：次日下跌=命中
 
 
 def classify_trend(prev: dict, cur: dict) -> str:
@@ -812,8 +813,8 @@ def save_prediction(
         symbol: 股票代码
         based_date: 预测依据的最新收盘日 'YYYY-MM-DD'
         predict_date: 预测目标日（下一交易日）'YYYY-MM-DD'
-        action: 结论文案（建议买入/偏多关注/观望/偏空警惕/建议卖出）
-        action_code: 方向代码 buy/watch_buy/hold/watch_sell/sell
+        action: 结论文案（加仓/持有/观望/减仓/卖出）
+        action_code: 方向代码 add/hold/watch/trim/sell（持有hold/观望watch只记录涨跌不计命中）
         factors/weights: 因子得分与权重（JSON 序列化落库）
 
     Returns:
@@ -874,9 +875,9 @@ def _review_predictions(config: DatabaseConfig | None = None) -> int:
     """对未复盘的预测记录自动复盘（幂等）
 
     用库中 K 线找到基于日期之后的首个实际交易日，比较其收盘涨跌与预测方向：
-    - 买入方向(buy/watch_buy)：实际涨 > 0 记命中
-    - 卖出方向(sell/watch_sell)：实际涨 < 0 记命中
-    - 观望(hold)：记录实际涨跌但不计命中(hit=null)
+    - 加仓(add)：实际涨 > 0 记命中
+    - 减仓/卖出(trim/sell)：实际涨 < 0 记命中
+    - 持有/观望(hold/watch)：记录实际涨跌但不计命中(hit=null)
 
     Returns:
         本次新复盘完成的记录数
