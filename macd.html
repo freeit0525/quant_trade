@@ -316,6 +316,8 @@ async function loadStockCatalog() {
     StockPicker.init(picker, stocks);
     if (stocks.length === 0) {
       infoEl.textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
+    } else {
+      infoEl.textContent = `库内共 ${stocks.length} 只股票：输入代码/名称搜索，或下拉选择`;
     }
   } catch (e) {
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')

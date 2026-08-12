@@ -338,28 +338,6 @@ function factorMA(rows, i) {
   return { score: clamp(score, -100, 100), desc };
 }
 
-// 11. 基本面：市值规模 + 上市年限（数据来自 stock_info）
-function factorFundamental(info) {
-  let score = 0;
-  const desc = [];
-  const cap = v(info.float_market_cap) || v(info.total_market_cap);
-  if (cap != null && cap > 0) {
-    const yi = cap; // 库内单位为"亿元"
-    if (yi >= 30 && yi <= 300) { score += 30; desc.push(`流通市值${yi.toFixed(0)}亿(活跃适中)`); }
-    else if (yi >= 10 && yi < 30) { score += 15; desc.push(`流通市值${yi.toFixed(0)}亿(小盘活跃)`); }
-    else if (yi > 300 && yi <= 1000) { score += 10; desc.push(`流通市值${yi.toFixed(0)}亿(中大盘)`); }
-    else if (yi > 1000) { score -= 20; desc.push(`流通市值${yi.toFixed(0)}亿(大盘权重,短线波动小)`); }
-    else if (yi < 10) { score -= 10; desc.push(`流通市值${yi.toFixed(0)}亿(微盘,风险高)`); }
-  } else desc.push('市值数据缺失，暂不计分');
-  if (info.list_date) {
-    const yrs = (new Date() - new Date(info.list_date)) / (365.25 * 24 * 3600 * 1000);
-    if (yrs < 1) { score += 15; desc.push('上市不足1年(次新股,波动大)'); }
-    else if (yrs < 5) { score += 8; desc.push(`上市${yrs.toFixed(0)}年(次新活跃)`); }
-    else desc.push(`上市${yrs.toFixed(0)}年(成熟)`);
-  } else desc.push('上市日期缺失');
-  return { score: clamp(score, -100, 100), desc };
-}
-
 // 12. OBV 能量潮：量价累积资金流向（顶/底背离 + 趋势 + 金叉死叉 + 近5日斜率）
 // 性能优化：若 rows 已附加 __obv 预计算序列（回测页全量循环时自动附加），直接复用；
 // 否则按原逻辑从 0 累加重建（与 predict.html 行为完全一致）
@@ -499,7 +477,7 @@ const FACTOR_GROUPS = [
   { key: 'fundflow', name: '资金组', keys: ['main', 'obv'],
     desc: '资金流类：主力净流入占成交额、OBV 能量潮' },
 ];
-// 未归组因子（如已停用的 fund）自动排在最后展示
+// 未归组因子自动排在最后展示（已停用的 fund 权重0、calc=null，不渲染不计算）
 
 // 2026-08-11 依据全库回测（9股约5万根K线）的命中率与因子有效性调整：
 // - 新增"短期涨跌幅"因子(mom5)：近5日跌≥8%后买入，5日盘中触及+2%概率77.5%（基准47.5%）
@@ -519,10 +497,11 @@ const DEFAULT_WEIGHTS = { main: 10, vol: 12, turnover: 10, volratio: 10, rsi: 12
 const DEFAULT_WEIGHTS_SELL = { main: 16, vol: 12, turnover: 12, volratio: 10, rsi: 14, kdj: 12, bias: 12, macd: 10, candle: 10, ma: 8, obv: 8, fund: 0, mom5: 24 };
 
 // ============ 综合评分（双向独立权重） ============
-// 12 因子打分只算一次，买入/卖出方向分别用各自权重加权，S ∈ [-100, 100]（fund 权重0已停用）
+// 12 因子打分只算一次，买入/卖出方向分别用各自权重加权，S ∈ [-100, 100]
+// 已停用的因子（fund calc=null，权重0）不参与计算也不进入明细
 function computeParts(rows, i, info) {
-  return FACTOR_DEFS.map(f => {
-    const res = f.key === 'fund' ? factorFundamental(info) : f.calc(rows, i);
+  return FACTOR_DEFS.filter(f => f.calc != null).map(f => {
+    const res = f.calc(rows, i);
     return { key: f.key, name: f.name, ...res };
   });
 }

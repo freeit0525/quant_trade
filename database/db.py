@@ -958,6 +958,15 @@ _PRED_COLUMNS = (
 )
 
 
+def get_pending_prediction_symbols(config: DatabaseConfig | None = None) -> list[str]:
+    """返回存在未复盘预测的股票代码列表（用于触发这些股票的行情增量同步后自动复盘）"""
+    with db_cursor(config) as cur:
+        cur.execute(
+            "SELECT DISTINCT symbol FROM market_data.predictions WHERE review_date IS NULL"
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
 def get_predictions(
     symbol: str | None = None,
     limit: int = 100,

@@ -87,6 +87,14 @@
   .score-line .bar { flex: 1; height: 14px; background: #f0f0f0; border-radius: 7px; overflow: hidden; display: flex; }
   .score-line .bar .up { background: #e8453c; height: 100%; }
   .score-line .bar .down { background: #34a853; height: 100%; }
+  /* 双向评分条：0 在中心，正值向右(红=多)，负值向左(绿=空)，宽度=强度 */
+  .score-line .bar.bi { position: relative; }
+  .score-line .bar.bi .half { position: absolute; top: 0; bottom: 0; width: 50%; overflow: hidden; }
+  .score-line .bar.bi .half.left { left: 0; }
+  .score-line .bar.bi .half.right { right: 0; }
+  .score-line .bar.bi .inner { display: block; height: 100%; }
+  .score-line .bar.bi .half.left .inner { float: right; }  /* 从中心向左延伸 */
+  .score-line .bar.bi .half.right .inner { float: left; }  /* 从中心向右延伸 */
   .score-line .value { flex: 0 0 56px; text-align: right; font-family: Consolas, monospace; font-weight: 600; font-size: 14px; }
   .up { color: #e8453c; }
   .down { color: #34a853; }
@@ -189,71 +197,18 @@
     <h1>买卖点预测</h1>
     <a class="back" href="index.html">← 返回入口</a>
   </div>
-  <div class="subtitle">基于一段时间的历史数据，用12因子评分预测<b>下一个交易日</b>的操作建议与走势形态；点「保存当前预测结论」落库后，<b>次日自动复盘验证</b>命中情况</div>
+  <div class="subtitle">选择股票后，自动基于<b>最新交易日</b>数据用12因子评分预测<b>下一个交易日</b>的操作建议与走势形态（固定取最近2年行情）；点「保存当前预测结论」落库后，<b>次日自动复盘验证</b>命中情况</div>
 
-  <!-- 股票与数据范围 -->
+  <!-- 股票选择 -->
   <div class="panel">
-    <h2>股票与数据范围</h2>
-    <div class="row">
+    <h2>选择股票（选完自动预测）</h2>
+    <div class="row" style="align-items:center;">
       <div class="field" style="flex:0 0 320px;">
-        <label>股票（可输入筛选 / 下拉选择）</label>
+        <label>股票（可输入筛选 / 下拉选择，回车直接预测）</label>
         <div id="stockPicker"></div>
       </div>
-      <div class="field" style="flex:0 0 auto; align-self:flex-end; display:flex; gap:8px;">
-        <button id="fetchBtn" onclick="fetchStock(false)">读取2年数据</button>
-        <button class="secondary" onclick="fetchStock(true)">同步最新数据</button>
-      </div>
+      <span id="stockInfo" class="hint" style="align-self:flex-end; padding-bottom:8px;">正在加载库内股票列表...</span>
     </div>
-
-    <!-- 数据范围模式切换 -->
-    <div class="row" style="align-items:center; margin-top:4px;">
-      <div class="field" style="flex:0 0 auto;">
-        <label>数据范围</label>
-        <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
-          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
-            <input type="radio" name="rangeMode" value="recent" checked onchange="onRangeModeChange()"> 最近
-          </label>
-          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
-            <input type="radio" name="rangeMode" value="period" onchange="onRangeModeChange()"> 时间段
-          </label>
-          <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
-            <input type="radio" name="rangeMode" value="all" onchange="onRangeModeChange()"> 自上市以后
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <!-- 最近模式：数量 + 单位 -->
-    <div id="recentModeRow" class="row">
-      <div class="field" style="flex:0 0 120px;">
-        <label>数量</label>
-        <input type="number" id="rangeCount" value="2" min="1" oninput="updateRangeUI()">
-      </div>
-      <div class="field" style="flex:0 0 120px;">
-        <label>单位</label>
-        <select id="rangeUnit" onchange="updateRangeUI()">
-          <option value="day">天</option>
-          <option value="month">月</option>
-          <option value="quarter">季度</option>
-          <option value="year" selected>年</option>
-        </select>
-      </div>
-      <div id="recentHint" class="hint" style="align-self:flex-end; padding-bottom:10px;">≈ 500 个交易日</div>
-    </div>
-
-    <!-- 时间段模式：起止日期 -->
-    <div id="periodModeRow" class="row" style="display:none;">
-      <div class="field" style="flex:0 0 200px;">
-        <label>起始日期</label>
-        <input type="date" id="begDate">
-      </div>
-      <div class="field" style="flex:0 0 200px;">
-        <label>结束日期</label>
-        <input type="date" id="endDate">
-      </div>
-    </div>
-
-    <div id="stockInfo" class="hint">正在加载库内股票列表...</div>
   </div>
 
   <!-- 因子权重 -->
@@ -305,9 +260,6 @@
 const API_BASE = (location.protocol === 'file:' || location.protocol === 'chrome-extension:')
   ? 'http://127.0.0.1:8000' : '';
 
-const UNIT_TRADING_DAYS = { day: 1, month: 22, quarter: 66, year: 250 };
-const UNIT_LABEL = { day: '天', month: '月', quarter: '季度', year: '年' };
-
 // 基础工具 v/clamp/fmtNum/fmtWan/esc 与 13大因子评分引擎已抽至 predict-engine.js
 function fmtDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -330,8 +282,10 @@ async function loadStockCatalog() {
     if (data.error) throw new Error(data.error);
     const stocks = data.data || [];
     const picker = document.getElementById('stockPicker');
-    StockPicker.init(picker, stocks);
+    // 选股即自动预测（固定最近2年、基于最新交易日）
+    StockPicker.init(picker, stocks, { onSelect: (code, name) => fetchStockFor(code, name) });
     if (stocks.length === 0) infoEl.textContent = '本地库 stock_info 暂无股票数据，请先拉取。';
+    else infoEl.textContent = `库内共 ${stocks.length} 只股票：输入代码/名称搜索，或下拉选择（选完自动预测）`;
   } catch (e) {
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
       ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）' : '';
@@ -340,61 +294,14 @@ async function loadStockCatalog() {
   }
 }
 
-// ============ 数据范围（与 macd.html 约定一致） ============
-function getRangeMode() {
-  const el = document.querySelector('input[name="rangeMode"]:checked');
-  return el ? el.value : 'recent';
-}
-function onRangeModeChange() {
-  const mode = getRangeMode();
-  document.getElementById('recentModeRow').style.display = mode === 'recent' ? 'flex' : 'none';
-  document.getElementById('periodModeRow').style.display = mode === 'period' ? 'flex' : 'none';
-  updateRangeUI();
-}
-function estimateTradingDays() {
-  const count = parseInt(document.getElementById('rangeCount').value) || 0;
-  const unit = document.getElementById('rangeUnit').value;
-  return Math.max(count * (UNIT_TRADING_DAYS[unit] || 1), 120);
-}
-function updateRangeUI() {
-  const mode = getRangeMode();
-  const btn = document.getElementById('fetchBtn');
-  const hint = document.getElementById('stockInfo');
-  if (mode === 'all') {
-    btn.textContent = '读取全部数据';
-    hint.textContent = '输入6位代码或名称，从本地库读取自上市以来的全部日K（如需最新行情请点「同步最新数据」）';
-    return;
-  }
-  if (mode === 'recent') {
-    const count = parseInt(document.getElementById('rangeCount').value) || 0;
-    const unit = document.getElementById('rangeUnit').value;
-    const days = estimateTradingDays();
-    btn.textContent = `读取 ${count} ${UNIT_LABEL[unit]} 数据`;
-    document.getElementById('recentHint').textContent = `≈ ${days} 个交易日`;
-    hint.textContent = `输入6位代码或名称，从本地库读取最近 ${count} ${UNIT_LABEL[unit]}（≈${days} 个交易日）日K与全部指标`;
-  } else {
-    btn.textContent = '读取时间段数据';
-    hint.textContent = '输入6位代码或名称，从本地库读取指定起止日期内的日K与指标';
-  }
-}
+// ============ 固定数据范围（预测基于最新交易日，固定取最近2年K线） ============
 function dateToYYYYMMDD(d) {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 }
-function buildRangeParams() {
-  const mode = getRangeMode();
-  if (mode === 'all') return { beg: '19900101', end: dateToYYYYMMDD(new Date()), lmt: 20000 };
-  if (mode === 'period') {
-    const b = document.getElementById('begDate').value;
-    const e = document.getElementById('endDate').value;
-    if (!b || !e) throw new Error('请选择起止日期');
-    if (b.replace(/-/g, '') > e.replace(/-/g, '')) throw new Error('起始日期不能晚于结束日期');
-    return { beg: b.replace(/-/g, ''), end: e.replace(/-/g, ''), lmt: 20000 };
-  }
-  const tradingDays = estimateTradingDays();
-  const naturalDays = Math.ceil(tradingDays * 1.5) + 30;
+function buildFixedRange() {
   const bd = new Date();
-  bd.setDate(bd.getDate() - naturalDays);
-  return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()), lmt: tradingDays };
+  bd.setFullYear(bd.getFullYear() - 2);
+  return { beg: dateToYYYYMMDD(bd), end: dateToYYYYMMDD(new Date()), lmt: 20000 };
 }
 
 // ============ 13大因子评分引擎已抽至 predict-engine.js（factorMainCap/factorVolume/.../scoreAt/computeSignals） ============
@@ -464,7 +371,7 @@ function initWeightGrid() {
     ...g,
     items: FACTOR_DEFS.filter(f => g.keys.includes(f.key)),
   })).filter(g => g.items.length);
-  const rest = FACTOR_DEFS.filter(f => !groupedKeys.includes(f.key));
+  const rest = FACTOR_DEFS.filter(f => !groupedKeys.includes(f.key) && f.calc != null);
   grid.innerHTML = grouped.map(g => `
     <div class="weight-group">
       <div class="weight-group-title" title="${esc(g.desc)}">${esc(g.name)}</div>
@@ -802,6 +709,9 @@ function runPrediction(rows, info) {
   const i = rows.length - 1;
   const res = scoreAtDual(rows, i, wBuy, wSell, info);
   const Sbuy = res.Sbuy, Ssell = res.Ssell;
+  // 双向评分条：正负各占半区（中心0），正值向右红(多)、负值向左绿(空)
+  const buyLeft = clamp(-Sbuy, 0, 100) / 2, buyRight = clamp(Sbuy, 0, 100) / 2;
+  const sellLeft = clamp(-Ssell, 0, 100) / 2, sellRight = clamp(Ssell, 0, 100) / 2;
   // 综合操作判定：输出单一操作建议（加仓/持有/观望/减仓/卖出）
   const op = opVerdict(Sbuy, Ssell);
   const P_up = clamp(Math.round(50 + Sbuy / 2), 5, 95);
@@ -895,13 +805,19 @@ function runPrediction(rows, info) {
         <div class="verdict-score">
           <div class="score-line">
             <span class="lab">买入向评分</span>
-            <div class="bar"><div class="up" style="width:${clamp(Sbuy, 0, 100)}%"></div></div>
-            <span class="value up">${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)}</span>
+            <div class="bar bi">
+              <div class="half left"><span class="inner down" style="width:${buyLeft}%"></span></div>
+              <div class="half right"><span class="inner up" style="width:${buyRight}%"></span></div>
+            </div>
+            <span class="value ${Sbuy >= 0 ? 'up' : 'down'}">${Sbuy >= 0 ? '+' : ''}${Sbuy.toFixed(1)}</span>
           </div>
           <div class="score-line">
             <span class="lab">卖出向评分</span>
-            <div class="bar"><div class="down" style="width:${clamp(-Ssell, 0, 100)}%"></div></div>
-            <span class="value down">${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}</span>
+            <div class="bar bi">
+              <div class="half left"><span class="inner down" style="width:${sellLeft}%"></span></div>
+              <div class="half right"><span class="inner up" style="width:${sellRight}%"></span></div>
+            </div>
+            <span class="value ${Ssell >= 0 ? 'up' : 'down'}">${Ssell >= 0 ? '+' : ''}${Ssell.toFixed(1)}</span>
           </div>
           <div class="score-line">
             <span class="lab">次日上涨概率</span>
@@ -1362,46 +1278,43 @@ function drawKlineChart(rows, S, verdict) {
 }
 
 // ============ 股票数据拉取 ============
-async function fetchStock(syncFirst = false) {
-  const infoEl = document.getElementById('stockInfo');
+let _fetchSeq = 0; // 防止快速切换股票时旧响应覆盖新选择
+async function fetchStock() {
   const pickerEl = document.getElementById('stockPicker');
   const picked = StockPicker.getValue(pickerEl);
   const input = StockPicker.getInput(pickerEl);
   if (!picked && !input) { showError('请选择股票或输入代码/名称'); return; }
-
-  infoEl.textContent = syncFirst ? '正在从数据源同步最新数据（联网，可能需要一些时间）...' : '正在读取本地数据库...';
-  try {
-    let code, name;
-    if (picked) { code = picked.code; name = picked.name; }
-    else if (/^\d{6}$/.test(input)) { code = input; }
-    else {
-      const m = input.match(/[（(](\d{6})[)）]/);
-      if (m) { code = m[1]; name = input.replace(/\s*[（(]\d{6}[)）]\s*$/, '').trim(); }
-    }
-    if (!code) {
-      const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
-      const data = await res.json();
-      const list = data.data || [];
-      if (!list.length) { showError('未找到匹配的A股'); infoEl.textContent = ''; return; }
-      const match = list.find(r => r.Name === input) || list[0];
-      code = match.Code; name = match.Name;
-    }
-    if (window.QueryHistory) QueryHistory.record(code, name);
-
-    const range = buildRangeParams();
-    if (syncFirst) {
-      try {
-        const syncRes = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
-        const syncData = await syncRes.json();
-        if (syncData.error) console.warn('同步失败:', syncData.error);
-      } catch (e) { console.warn('同步失败:', e); }
-    }
-
-    const url = `${API_BASE}/api/kline_db?code=${code}&beg=${range.beg}&end=${range.end}`;
-    const res = await fetch(url);
+  let code, name;
+  if (picked) { code = picked.code; name = picked.name; }
+  else if (/^\d{6}$/.test(input)) { code = input; }
+  else {
+    const m = input.match(/[（(](\d{6})[)）]/);
+    if (m) { code = m[1]; name = input.replace(/\s*[（(]\d{6}[)）]\s*$/, '').trim(); }
+  }
+  if (!code) {
+    const res = await fetch(`${API_BASE}/api/stock_catalog?keyword=${encodeURIComponent(input)}`);
     const data = await res.json();
-    if (!data.data || data.data.length === 0) {
-      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据，请点「同步最新数据」联网拉取一次');
+    const list = data.data || [];
+    if (!list.length) { showError('未找到匹配的A股'); return; }
+    const match = list.find(r => r.Name === input) || list[0];
+    code = match.Code; name = match.Name;
+  }
+  await fetchStockFor(code, name);
+}
+
+// 固定最近2年、基于最新交易日预测（先增量同步最新行情再读库）
+async function fetchStockFor(code, name) {
+  const seq = ++_fetchSeq;
+  const infoEl = document.getElementById('stockInfo');
+  infoEl.textContent = '正在获取最新行情并预测...';
+  try {
+    if (window.QueryHistory) QueryHistory.record(code, name);
+    const range = buildFixedRange();
+    const res = await fetch(`${API_BASE}/api/kline?code=${code}&beg=${range.beg}&end=${range.end}`);
+    const data = await res.json();
+    if (seq !== _fetchSeq) return; // 用户已切换股票，丢弃过期响应
+    if (data.error || !data.data || !data.data.length) {
+      showError((data.error || '未获取到K线数据，请检查代码是否正确') + '；若本地库无该股数据且联网失败，请检查网络后重试');
       infoEl.textContent = '';
       return;
     }
@@ -1422,17 +1335,18 @@ async function fetchStock(syncFirst = false) {
       bias5: v(k.bias5), bias10: v(k.bias10), bias20: v(k.bias20),
     }));
     if (rows.length < 60) {
-      showError(`数据仅 ${rows.length} 条，预测至少需要60个交易日，请扩大数据范围或同步最新数据`);
+      showError(`数据仅 ${rows.length} 条，预测至少需要60个交易日，请稍后重试或检查数据源`);
       return;
     }
 
-    // 股票基本信息（基本面因子）
+    // 股票基本信息
     let info = { symbol: code, name: name, industry: '', list_date: null, float_market_cap: null, total_market_cap: null };
     try {
       const ires = await fetch(`${API_BASE}/api/stock_info?code=${code}`);
       const idata = await ires.json();
       if (!idata.error) info = { ...info, ...idata };
     } catch (e) { console.warn('获取股票信息失败:', e); }
+    if (seq !== _fetchSeq) return;
 
     window.__klineData = rows;
     window.__stockInfo = info;
@@ -1447,6 +1361,7 @@ async function fetchStock(syncFirst = false) {
     runPrediction(rows, info);
     checkTodaySaved(code, last.date);
   } catch (e) {
+    if (seq !== _fetchSeq) return;
     const hint = (e instanceof TypeError && e.message === 'Failed to fetch')
       ? '（请确认已运行 python server.py 启动本地服务，且端口8000未被占用）' : '';
     showError('查询失败: ' + e.message + hint);
@@ -1473,14 +1388,6 @@ loadStockCatalog();
 initWeightGrid();
 loadPredictions();
 loadPredStats();
-(function initRangeUI() {
-  const today = new Date();
-  const halfYearAgo = new Date();
-  halfYearAgo.setDate(halfYearAgo.getDate() - 180);
-  document.getElementById('begDate').value = fmtDate(halfYearAgo);
-  document.getElementById('endDate').value = fmtDate(today);
-  updateRangeUI();
-})();
 document.addEventListener('keydown', (e) => {
   const picker = document.getElementById('stockPicker');
   if (e.key === 'Enter' && picker && picker.contains(e.target)) {

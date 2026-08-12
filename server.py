@@ -179,6 +179,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_backtest_result_save(body)
             elif parsed.path == "/api/predict/save":
                 self.api_predict_save(body)
+            elif parsed.path == "/api/predictions/import":
+                self.api_predictions_import(body)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -336,6 +338,82 @@ class QuantHandler(SimpleHTTPRequestHandler):
             return
         self._send_json({"ok": True, "id": pred_id, "message": "预测结论已保存，次日自动复盘"}, 200)
 
+    def api_predictions_import(self, body: dict):
+        """批量导入回测信号为预测记录（补充复盘样本）
+
+        回测页把历史信号批量写入 predictions 表，随后 get_predictions/get_prediction_stats
+        会自动对每条记录复盘（K线已在库中），快速积累命中/未命中样本供策略迭代。
+        同一股票同一 based_date 重复导入会覆盖（幂等）。
+        参数: {records: [{symbol,name,based_date,predict_date,action,action_code,score,
+                          prob_up,close,support_price,support2_price,resistance_price,
+                          resistance2_price,stop_loss,factors,weights,trend,...}]}
+        """
+        from database.db import save_prediction
+
+        records = body.get("records") or []
+        if not isinstance(records, list) or not records:
+            self._send_json({"error": "缺少 records 列表"}, 400)
+            return
+        imported = 0
+        errors = []
+        for i, rec in enumerate(records):
+            try:
+                required = ["symbol", "based_date", "predict_date", "action", "action_code"]
+                missing = [k for k in required if not rec.get(k)]
+                if missing:
+                    raise ValueError(f"缺少必填字段 {missing}")
+                save_prediction(
+                    symbol=str(rec["symbol"]).strip(),
+                    name=(rec.get("name") or "").strip() or None,
+                    based_date=str(rec["based_date"]),
+                    predict_date=str(rec["predict_date"]),
+                    action=str(rec["action"]).strip(),
+                    action_code=str(rec["action_code"]).strip(),
+                    score=_opt_float(rec.get("score")),
+                    prob_up=_opt_float(rec.get("prob_up")),
+                    close=_opt_float(rec.get("close")),
+                    support_price=_opt_float(rec.get("support_price")),
+                    support2_price=_opt_float(rec.get("support2_price")),
+                    resistance_price=_opt_float(rec.get("resistance_price")),
+                    resistance2_price=_opt_float(rec.get("resistance2_price")),
+                    stop_loss=_opt_float(rec.get("stop_loss")),
+                    factors=rec.get("factors") or [],
+                    weights=rec.get("weights") or {},
+                    trend=(rec.get("trend") or "").strip() or None,
+                    trend_probs=rec.get("trend_probs") or {},
+                    trend_strategy=rec.get("trend_strategy") or None,
+                )
+                imported += 1
+            except Exception as e:
+                errors.append({"index": i, "symbol": rec.get("symbol"), "error": str(e)})
+        self._send_json({"ok": True, "imported": imported, "errors": errors[:20]}, 200)
+
+    def _sync_pending_predictions(self):
+        """对存在未复盘预测的股票做增量行情同步，保证次日复盘能取到实际收盘价。
+
+        复盘依赖"预测日之后的首个交易日"行情：若该股K线未同步到最新，复盘会一直
+        停留在"待复盘"。这里在读取预测记录前先补齐未复盘股票的尾部缺口（增量，
+        只拉缺失日期），随后 get_predictions 内部的自动复盘即可生效。
+        """
+        try:
+            from database.db import get_pending_prediction_symbols
+
+            symbols = get_pending_prediction_symbols()
+            if not symbols:
+                return
+            from data.fetcher import DataFetcher
+            from datetime import datetime
+
+            fetcher = DataFetcher()
+            today = datetime.now().strftime("%Y%m%d")
+            for sym in symbols:
+                try:
+                    fetcher.fetch_stock(sym, "19900101", today, use_db=True)
+                except Exception as e:
+                    logger.warning("同步 %s 行情失败（复盘暂缓）: %s", sym, e)
+        except Exception as e:
+            logger.warning("同步未复盘预测行情失败: %s", e)
+
     def api_predictions(self, params: dict):
         """获取预测记录列表（自动复盘未复盘记录）
 
@@ -346,6 +424,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
         """
         from database.db import get_predictions
 
+        self._sync_pending_predictions()
         symbol = (params.get("symbol") or "").strip() or None
         limit = 100
         if params.get("limit"):
@@ -360,6 +439,7 @@ class QuantHandler(SimpleHTTPRequestHandler):
         """预测记录汇总统计（自动复盘后计算命中率/因子有效性/策略建议）"""
         from database.db import get_prediction_stats
 
+        self._sync_pending_predictions()
         self._send_json(get_prediction_stats(), 200)
 
     def api_strategy_save(self, body: dict):

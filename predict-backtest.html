@@ -122,11 +122,22 @@
     <div class="row" style="align-items:center;">
       <div class="field" style="flex:0 0 auto; min-width:0;">
         <label>回测股票（库中已有K线）</label>
-        <div id="stockChecks" class="stock-checks"><span class="hint">正在加载库内股票...</span></div>
-      </div>
-      <div style="display:flex; gap:8px; align-self:flex-end;">
-        <button class="secondary" onclick="setAllStocks(true)">全选</button>
-        <button class="secondary" onclick="setAllStocks(false)">清空</button>
+        <div id="stockPickerWrap" style="position:relative;">
+          <div id="stockPickerBtn" onclick="toggleStockPanel()" style="width:340px; max-width:60vw; border:1px solid #ccc; border-radius:4px; padding:6px 10px; font-size:13px; color:#444; background:#fff; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-sizing:border-box;">
+            <span id="stockPickSummary">正在加载...</span><span style="float:right; color:#999;">▾</span>
+          </div>
+          <div id="stockPickerPanel" style="display:none; position:absolute; z-index:99; margin-top:4px; width:340px; max-width:70vw; background:#fff; border:1px solid #ccc; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,.12);">
+            <div style="padding:8px 8px 4px 8px;">
+              <input id="stockSearch" placeholder="搜索代码/名称" oninput="filterStocks(this.value)" style="width:100%; box-sizing:border-box;">
+            </div>
+            <div id="stockChecks" class="stock-checks" style="max-height:240px; overflow:auto; padding:4px 8px 8px 8px; margin:0;"></div>
+            <div style="padding:6px 8px 8px 8px; border-top:1px solid #f0f0f0; display:flex; gap:8px; align-items:center;">
+              <button class="secondary" style="padding:3px 12px; font-size:12px;" onclick="setAllStocks(true)">全选</button>
+              <button class="secondary" style="padding:3px 12px; font-size:12px;" onclick="setAllStocks(false)">清空</button>
+              <button class="primary" style="padding:3px 12px; font-size:12px; margin-left:auto;" onclick="closeStockPanel()">确定</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -265,21 +276,57 @@ async function loadStockList() {
     STOCKS = data.data || [];
     if (!STOCKS.length) {
       wrap.innerHTML = '<span class="hint">库中暂无K线数据，请先在「数据拉取」页导入</span>';
+      updateStockSummary();
       return;
     }
     wrap.innerHTML = STOCKS.map(s => `
-      <label><input type="checkbox" class="stock-cb" value="${s.Code}" checked> ${s.Code} ${s.Name || ''}</label>
+      <label><input type="checkbox" class="stock-cb" value="${s.Code}" onchange="updateStockSummary()" checked> ${s.Code} ${s.Name || ''}</label>
     `).join('');
+    updateStockSummary();
   } catch (e) {
     wrap.innerHTML = `<span class="error" style="display:block;">加载股票列表失败: ${e.message}</span>`;
   }
 }
 function setAllStocks(on) {
   document.querySelectorAll('.stock-cb').forEach(cb => cb.checked = on);
+  updateStockSummary();
 }
 function getSelectedStocks() {
   return [...document.querySelectorAll('.stock-cb:checked')].map(cb => cb.value);
 }
+
+// ============ 股票下拉多选 ============
+function toggleStockPanel() {
+  const p = document.getElementById('stockPickerPanel');
+  const show = p.style.display !== 'block';
+  p.style.display = show ? 'block' : 'none';
+  if (show) {
+    document.getElementById('stockSearch').value = '';
+    filterStocks('');
+  }
+}
+function filterStocks(kw) {
+  kw = (kw || '').trim().toLowerCase();
+  document.querySelectorAll('#stockChecks label').forEach(label => {
+    label.style.display = (!kw || label.textContent.toLowerCase().includes(kw)) ? '' : 'none';
+  });
+}
+function closeStockPanel() {
+  document.getElementById('stockPickerPanel').style.display = 'none';
+}
+function updateStockSummary() {
+  const el = document.getElementById('stockPickSummary');
+  if (!STOCKS.length) { el.textContent = '库中暂无K线数据'; return; }
+  const cbs = document.querySelectorAll('.stock-cb');
+  const sel = [...cbs].filter(cb => cb.checked);
+  el.textContent = sel.length
+    ? `已选 ${sel.length} 只：${sel.slice(0, 3).map(cb => cb.value).join('、')}${sel.length > 3 ? ' 等' : ''}`
+    : '点击选择股票（0 只）';
+}
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('stockPickerWrap');
+  if (wrap && !wrap.contains(e.target)) closeStockPanel();
+});
 
 // ============ 数据范围 ============
 function getRangeMode() {
@@ -370,7 +417,8 @@ function resetWeights() {
 }
 function initWeightGrid() {
   const grid = document.getElementById('weightGrid');
-  grid.innerHTML = FACTOR_DEFS.map(f => `
+  // 已停用因子（fund calc=null）不渲染
+  grid.innerHTML = FACTOR_DEFS.filter(f => f.calc != null).map(f => `
     <div class="weight-item">
       <span class="name" title="点击查看打分依据" style="cursor:pointer;"
             onclick="showFactorDesc('${f.key}')">${f.name}</span>
@@ -414,13 +462,13 @@ function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, ev
     if (prevBuy != null && Sbuy >= buyTh && prevBuy < buyTh - 8) {
       // 大盘波动率过滤：默认开，指数数据缺失日视为通过
       if (!marketOn || !marketStates || marketFilterAllow(marketStates.get(rows[t].date))) {
-        signals.push({ t, type: 'buy', S: Sbuy, parts });
+        signals.push({ t, type: 'buy', Sbuy, Ssell, parts });
       } else {
         filteredBuy++;
       }
     }
     if (prevSell != null && Ssell <= sellTh && prevSell > sellTh + 8) {
-      signals.push({ t, type: 'sell', S: Ssell, parts });
+      signals.push({ t, type: 'sell', Sbuy, Ssell, parts });
     }
     prevBuy = Sbuy;
     prevSell = Ssell;
@@ -436,7 +484,11 @@ function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, ev
         const hit = sg.type === 'buy' ? retN > 0 : retN < 0;
         results.push({
           symbol: info.symbol, name: info.name, date: rows[sg.t].date,
-          type: sg.type, S: sg.S, close: close0, retN, hit, parts: sg.parts,
+          predict_date: rows[sg.t + 1] ? rows[sg.t + 1].date : null,
+          type: sg.type, S: sg.type === 'buy' ? sg.Sbuy : sg.Ssell,
+          Sbuy: sg.Sbuy, Ssell: sg.Ssell,
+          close: close0, retN, hit, parts: sg.parts,
+          weights: { buy: weightsBuy, sell: weightsSell },
         });
       }
     }
@@ -706,6 +758,19 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
       ${chips}
       ${baselineHint}
       <div class="note-box"><strong>找不足 · 结论：</strong>${conclusion}</div>
+      <div class="note-box" style="margin-top:10px; border-color:#1a73e8; background:#f4f8ff;">
+        <strong>补充预测验证样本：</strong>本次回测共 <b>${results.length}</b> 个历史信号，可批量导入预测记录（预测页「预测落库与复盘」会按<b>次日涨跌</b>口径自动复盘），快速积累命中/未命中样本，供策略生成迭代。
+        <button onclick="importSignalsToPredictions()" style="margin:6px 0 0 0;">导入 ${results.length} 条信号到预测记录</button>
+        <span id="importStatus" class="hint" style="margin-left:8px;"></span>
+      </div>
+      <div class="note-box" style="margin-top:10px; border-color:#f9a825; background:#fffbea;">
+        <strong>生成策略：</strong>把本次回测的信号规则（BUY_TH=${buyTh} / SELL_TH=${sellTh} / 权重）与优化交易参数（止损3% / 止盈8% / 持仓15日 / 仓位100%）打包保存，供「买卖点策略回测」页选择运行。
+        <div class="row" style="align-items:center; margin-top:6px;">
+          <input id="strategyName" placeholder="策略名称（如：12因子短线 35/-35 v1）" style="flex:0 0 260px;">
+          <button onclick="saveGeneratedStrategy()">生成并保存策略</button>
+          <span id="genStrategyStatus" class="hint"></span>
+        </div>
+      </div>
     </div>
 
     <div class="panel">
@@ -766,6 +831,80 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
   drawRetChart(results, evalDays);
   signalInit();
   fillSigKlineStock(results);
+}
+
+// 把回测数据生成策略并保存（信号规则 + 优化交易参数），供「买卖点策略回测」页选择运行
+async function saveGeneratedStrategy() {
+  const name = (document.getElementById('strategyName').value || '').trim();
+  if (!name) { showError('请输入策略名称'); return; }
+  const buyTh = parseInt(document.getElementById('buyTh').value) || 25;
+  const sellTh = parseInt(document.getElementById('sellTh').value) || -25;
+  const evalDays = parseInt(document.getElementById('evalDays').value) || 5;
+  const statusEl = document.getElementById('genStrategyStatus');
+  statusEl.textContent = '保存中...';
+  const params = {
+    sigMode: 'model',
+    buyTh, sellTh, evalDays,
+    useSellSig: true,
+    stopLoss: 3, takeProfit: 8, maxHold: 15, positionRatio: 1,
+    priceMode: 'nextOpen', marketFilter: true,
+    weights: { buy: getWeightsByTab('buy'), sell: getWeightsByTab('sell') },
+  };
+  try {
+    const res = await fetch(`${API_BASE}/api/strategy/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        strategy_name: name,
+        strategy_type: 'predict',
+        params,
+        description: `回测生成：BUY_TH=${buyTh}/SELL_TH=${sellTh}，N=${evalDays}日，12因子权重；交易参数 止损3%/止盈8%/持仓15日/仓位100%`,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) { showError('保存失败: ' + data.error); statusEl.textContent = ''; return; }
+    statusEl.textContent = `已保存策略「${name}」（id=${data.id}），可到「策略回测工具」页「单股策略回测」的预设策略下拉选择运行`;
+  } catch (e) {
+    showError('保存失败: ' + e.message);
+    statusEl.textContent = '';
+  }
+}
+
+// 把回测历史信号批量导入预测记录（补充复盘样本，同一股票同一 based_date 覆盖，幂等）
+async function importSignalsToPredictions() {
+  const results = _allResults;
+  if (!results.length) return;
+  if (!confirm(`将 ${results.length} 条历史信号批量导入预测记录？\n\n导入后预测页会自动按"次日涨跌"口径复盘这些信号，作为预测验证样本，用于生成量化策略。\n（同一股票同一日期会覆盖已有记录）`)) return;
+  const statusEl = document.getElementById('importStatus');
+  statusEl.textContent = '导入中...';
+  const records = results.map(r => {
+    const isBuy = r.type === 'buy';
+    return {
+      symbol: r.symbol, name: r.name,
+      based_date: r.date,
+      predict_date: r.predict_date,
+      action: isBuy ? '加仓' : '卖出',
+      action_code: isBuy ? 'add' : 'sell',
+      score: r.Sbuy, // 评分统一存买入向评分
+      prob_up: clamp(Math.round(50 + r.Sbuy / 2), 5, 95),
+      close: r.close,
+      factors: r.parts,
+      weights: r.weights,
+    };
+  });
+  try {
+    const res = await fetch(`${API_BASE}/api/predictions/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records }),
+    });
+    const data = await res.json();
+    if (data.error) { showError('导入失败: ' + data.error); statusEl.textContent = ''; return; }
+    statusEl.textContent = `已导入 ${data.imported} 条` + (data.errors && data.errors.length ? `，失败 ${data.errors.length} 条（已忽略）` : '') + '；可到预测页「预测落库与复盘」查看自动复盘结果';
+  } catch (e) {
+    showError('导入失败: ' + e.message);
+    statusEl.textContent = '';
+  }
 }
 
 function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt, baselineHitUp) {
