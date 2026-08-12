@@ -26,3 +26,5 @@ Desktop.ini
 # Data cache
 cache/
 *.csv
+*.json
+_kline_data.json
