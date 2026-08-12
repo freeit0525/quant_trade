@@ -68,6 +68,10 @@
   .weight-item .name { flex: 0 0 64px; font-size: 13px; color: #555; white-space: nowrap; }
   .weight-item input[type=range] { flex: 1; min-width: 60px; }
   .weight-item .val { flex: 0 0 30px; font-size: 12px; color: #1a73e8; font-family: Consolas, monospace; text-align: right; }
+  .weight-group { margin-bottom: 10px; }
+  .weight-group-title { font-size: 12px; font-weight: 600; color: #1a73e8; margin: 2px 0 4px; padding-left: 6px; border-left: 3px solid #1a73e8; line-height: 1.4; }
+  .factor-group-title { font-size: 12px; font-weight: 600; color: #1a73e8; margin: 8px 0 2px; padding-left: 6px; border-left: 3px solid #1a73e8; line-height: 1.4; }
+  .factor-group-title:first-child { margin-top: 0; }
 
   /* 结论卡片 */
   .verdict { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -177,7 +181,7 @@
 <script src="ui-modal.js"></script>
 <script src="query-history.js"></script>
 <script src="stock-picker.js"></script>
-<script src="predict-engine.js?v=20260811"></script>
+<script src="predict-engine.js?v=20260812"></script>
 </head>
 <body>
 <div class="container">
@@ -440,16 +444,32 @@ function applyWeights() {
   if (window.__klineData && window.__stockInfo) runPrediction(window.__klineData, window.__stockInfo);
   else showError('请先读取股票数据');
 }
-function initWeightGrid() {
-  const grid = document.getElementById('weightGrid');
-  grid.innerHTML = FACTOR_DEFS.map(f => `
+// 单个因子权重滑块 HTML
+function weightItemHtml(f) {
+  return `
     <div class="weight-item">
       <span class="name" style="cursor:pointer;" onclick="showFactorModal('${f.key}')" title="点击查看打分依据">${f.name}</span>
       <input type="range" id="w_${f.key}" min="0" max="30" value="${DEFAULT_WEIGHTS[f.key]}"
              oninput="document.getElementById('wv_${f.key}').textContent=this.value; schedulePredict()"
              title="${f.desc}">
       <span class="val" id="wv_${f.key}">${DEFAULT_WEIGHTS[f.key]}</span>
-    </div>`).join('');
+    </div>`;
+}
+function initWeightGrid() {
+  const grid = document.getElementById('weightGrid');
+  // 按 FACTOR_GROUPS 分组渲染；未归组因子（如已停用 fund）排在最后
+  const groupedKeys = FACTOR_GROUPS.flatMap(g => g.keys);
+  const grouped = FACTOR_GROUPS.map(g => ({
+    ...g,
+    items: FACTOR_DEFS.filter(f => g.keys.includes(f.key)),
+  })).filter(g => g.items.length);
+  const rest = FACTOR_DEFS.filter(f => !groupedKeys.includes(f.key));
+  grid.innerHTML = grouped.map(g => `
+    <div class="weight-group">
+      <div class="weight-group-title" title="${esc(g.desc)}">${esc(g.name)}</div>
+      ${g.items.map(weightItemHtml).join('')}
+    </div>`).join('')
+    + (rest.length ? `<div class="weight-group">${rest.map(weightItemHtml).join('')}</div>` : '');
   syncGridToBuf();
 }
 let _predictTimer = null;
@@ -787,8 +807,26 @@ function runPrediction(rows, info) {
   const L = calcLevels(rows, i);
   const last = rows[i];
 
-  // 历史信号（双向独立判定）
-  const signals = computeSignalsDual(rows, wBuy, wSell, info);
+  // 大盘状态卡（市场过滤依据：沪深300 年化波动率适中 15%~45% 才允许买入信号）
+  const mst = _marketStates ? _marketStates.get(last.date) : null;
+  let marketHtml = '';
+  if (mst) {
+    const allow = marketFilterAllow(mst);
+    const volNote = mst.vol20 > 0.45 ? '过热(>45%)，追高风险大' : (mst.vol20 < 0.15 ? '过低(<15%)，无量行情' : '适中');
+    const momTxt = ((mst.momentum5) * 100).toFixed(2);
+    const volTxt = (mst.vol20 * 100).toFixed(1);
+    marketHtml = `
+      <div style="display:flex; flex-wrap:wrap; gap:14px; margin:10px 0; padding:9px 14px; border:1px solid #e3e6ea; border-radius:8px; background:#fafbfc; font-size:13px; color:#444;">
+        <span style="white-space:nowrap;"><b>大盘状态</b>（${_indexName} ${_indexLast}）</span>
+        <span style="white-space:nowrap;">近5日动量 <b class="${mst.momentum5 >= 0 ? 'up' : 'down'}">${momTxt}%</b></span>
+        <span style="white-space:nowrap;">年化波动率 <b>${volTxt}%</b>（${volNote}）</span>
+        <span style="white-space:nowrap;">趋势 <b>${mst.aboveMA20 ? '站上20日线' : '跌破20日线'}</b></span>
+        <span style="white-space:nowrap;">买入信号<b class="${allow ? 'up' : 'down'}">${allow ? '允许' : '暂缓（波动率不适中）'}</b></span>
+      </div>`;
+  }
+
+  // 历史信号（双向独立判定；接入大盘波动率过滤：波动率不适中的买入信号剔除）
+  const signals = computeSignalsDual(rows, wBuy, wSell, info, undefined, undefined, { marketStates: _marketStates });
   const stats = signalStats(rows, signals);
 
   // 明日走势形态预测 + 操作策略
@@ -798,7 +836,7 @@ function runPrediction(rows, info) {
   // 因子条（点击因子行弹窗查看打分依据）：权重按当前编辑 tab 展示
   const activeWeights = _wtTab === 'sell' ? wSell : wBuy;
   window.__factorParts = res.parts.map(p => ({ ...p, weight: activeWeights[p.key] || 0 }));
-  const factorHtml = res.parts.map(p => {
+  const factorRowHtml = p => {
     const sc = p.score;
     const w = activeWeights[p.key] || 0;
     const pos = sc >= 0;
@@ -815,7 +853,18 @@ function runPrediction(rows, info) {
         <span class="fscore ${pos ? 'up' : 'down'}">${sc >= 0 ? '+' : ''}${sc.toFixed(0)}</span>
         <div class="fdesc">${p.desc.join('；')}${weightNote} <span style="color:#aaa">(${wt})</span></div>
       </div>`;
-  }).join('');
+  };
+  // 因子明细按组展示（FACTOR_GROUPS 为展示层分组，评分与权重不变，信号零变化）
+  const groupKeys = FACTOR_GROUPS.flatMap(g => g.keys);
+  const groupedParts = FACTOR_GROUPS.map(g => ({
+    ...g,
+    items: res.parts.filter(p => g.keys.includes(p.key)),
+  })).filter(g => g.items.length);
+  const restParts = res.parts.filter(p => !groupKeys.includes(p.key));
+  const factorHtml = groupedParts.map(g => `
+    <div class="factor-group-title" title="${esc(g.desc)}">${esc(g.name)}</div>
+    ${g.items.map(factorRowHtml).join('')}
+  `).join('') + restParts.map(factorRowHtml).join('');
 
   // 历史信号表格（最近12条）
   const recentSignals = signals.slice(-12).reverse();
@@ -835,10 +884,13 @@ function runPrediction(rows, info) {
   } else {
     sigHtml = '<tr><td colspan="5" style="color:#999; text-align:center;">所选区间内未产生信号（可扩大数据范围）</td></tr>';
   }
-  const buyRate = stats.buyCnt ? (stats.buyWin / stats.buyCnt * 100).toFixed(0) : '-';
-  const sellRate = stats.sellCnt ? (stats.sellWin / stats.sellCnt * 100).toFixed(0) : '-';
+  const baseline = baselineStats(rows, 5); // 该股全历史随机入场基线（后5日收益率口径）
+  const buyRate = stats.buyCnt ? (stats.buyWin / stats.buyCnt * 100).toFixed(1) : '-';
+  const sellRate = stats.sellCnt ? (stats.sellWin / stats.sellCnt * 100).toFixed(1) : '-';
   const buyTouchRate = stats.buyCnt ? (stats.buyTouch / stats.buyCnt * 100).toFixed(0) : '-';
   const sellTouchRate = stats.sellCnt ? (stats.sellTouch / stats.sellCnt * 100).toFixed(0) : '-';
+  const buyExcess = (buyRate !== '-' && baseline.hitUp != null) ? (parseFloat(buyRate) - baseline.hitUp) : null;
+  const sellExcess = (sellRate !== '-' && baseline.hitUp != null) ? (parseFloat(sellRate) - (100 - baseline.hitUp)) : null;
 
   // 一句话结论摘要（通俗版）：综合买卖双向评分给用户最直接的"下个交易日操作建议"
   const mom = window.__factorParts ? (window.__factorParts.find(p => p.key === 'mom5') || {}).score : null;
@@ -862,6 +914,7 @@ function runPrediction(rows, info) {
       <h2>下个交易日买卖点预测（${info.name || ''} ${info.symbol || ''} | 预测日: ${window.__predictDate}）</h2>
       <div class="hint">基于最新收盘日 ${last.date} 的13大因子综合评分（含"短期涨跌幅"超跌反弹/超涨回落因子），买入/卖出各一套独立权重；综合双向评分输出下个交易日操作建议</div>
       <div class="summary-box">💡 ${summaryTxt}</div>
+      ${marketHtml}
       <div class="verdict">
         <div class="verdict-badge" style="background:${op.color}">
           <div class="action">${op.action}</div>
@@ -888,7 +941,7 @@ function runPrediction(rows, info) {
             <div class="bar"><div class="down" style="width:${P_down}%"></div></div>
             <span class="value down">${P_down}%</span>
           </div>
-          <div class="score-summary">操作建议由 13 因子买入/卖出双权重评分综合判定：加仓/持有偏多、减仓/卖出偏空、观望为方向不明。实际短线操作以"5日盘中触及+2%（买）/ -2%（卖）"为有效口径，回测命中率见下方K线信号区</div>
+          <div class="score-summary">操作建议由 12 因子买入/卖出双权重评分综合判定（基本面因子已停用）：加仓/持有偏多、减仓/卖出偏空、观望为方向不明。信号评价以<b>后5日收益率</b>为权威口径（下方展示命中率与随机入场基线对比），盘中触及±2%仅作短线辅助参考</div>
         </div>
       </div>
 
@@ -959,10 +1012,12 @@ function runPrediction(rows, info) {
     <div class="panel">
       <h2>K线与买卖信号（${rows.length}个交易日）</h2>
       <div class="stats">
-        <div class="stat-item"><span class="k">买入信号·5日盘中触及+2%</span>：<strong class="up">${buyTouchRate}%</strong>（${stats.buyCnt}次）</div>
-        <div class="stat-item"><span class="k">买入信号·5日收盘上涨</span>：<strong class="up">${buyRate}%</strong></div>
-        <div class="stat-item"><span class="k">卖出信号·5日盘中触及-2%</span>：<strong class="down">${sellTouchRate}%</strong>（${stats.sellCnt}次）</div>
-        <div class="stat-item"><span class="k">卖出信号·5日收盘下跌</span>：<strong class="down">${sellRate}%</strong></div>
+        <div class="stat-item"><span class="k">买入信号·后5日收盘上涨（主口径）</span>：<strong class="up">${buyRate}%</strong>（${stats.buyCnt}次，随机入场基线 ${baseline.hitUp != null ? baseline.hitUp.toFixed(1) + '%' : '-'}${buyExcess != null ? (buyExcess >= 0 ? '，超额+' : '，超额') + buyExcess.toFixed(1) + 'pt' : ''}）</div>
+        <div class="stat-item"><span class="k">买入信号·后5日均收益</span>：<strong class="${(stats.buy.avg != null && stats.buy.avg > 0) ? 'up' : 'down'}">${stats.buy.avg != null ? (stats.buy.avg >= 0 ? '+' : '') + stats.buy.avg.toFixed(2) + '%' : '-'}</strong>（基线 ${baseline.avgRet != null ? (baseline.avgRet >= 0 ? '+' : '') + baseline.avgRet.toFixed(2) + '%' : '-'}）</div>
+        <div class="stat-item"><span class="k">卖出信号·后5日收盘下跌（主口径）</span>：<strong class="down">${sellRate}%</strong>（${stats.sellCnt}次${sellExcess != null ? (sellExcess >= 0 ? '，超额+' : '，超额') + sellExcess.toFixed(1) + 'pt' : ''}）</div>
+        <div class="stat-item"><span class="k">卖出信号·后5日均收益</span>：<strong class="${(stats.sell.avg != null && stats.sell.avg < 0) ? 'down' : 'up'}">${stats.sell.avg != null ? (stats.sell.avg >= 0 ? '+' : '') + stats.sell.avg.toFixed(2) + '%' : '-'}</strong>（负=卖出后下跌，信号有效）</div>
+        <div class="stat-item" style="color:#888"><span class="k">辅助参考·5日盘中触及+2%（买）</span>：<strong>${buyTouchRate}%</strong>（${stats.buyCnt}次）</div>
+        <div class="stat-item" style="color:#888"><span class="k">辅助参考·5日盘中触及-2%（卖）</span>：<strong>${sellTouchRate}%</strong>（${stats.sellCnt}次）</div>
       </div>
       <div class="chart-wrap">
         <div class="legend">
@@ -1468,6 +1523,20 @@ async function fetchStock(syncFirst = false) {
 }
 
 // ============ 页面初始化 ============
+// ============ 大盘指数（市场过滤） ============
+let _marketStates = null; // Map(date -> 大盘状态)
+let _indexName = '沪深300', _indexLast = '-';
+(async function loadMarketIndex() {
+  try {
+    const res = await fetch(`${API_BASE}/api/index_kline`);
+    const data = await res.json();
+    if (data.error || !data.data || !data.data.length) return;
+    const idxRows = data.data.map(k => ({ date: k.date, close: v(k.close) }));
+    _marketStates = computeMarketState(idxRows);
+    if (data.index?.name) _indexName = data.index.name;
+    _indexLast = `${idxRows[idxRows.length - 1].date} ${idxRows[idxRows.length - 1].close}`;
+  } catch (e) { console.warn('加载大盘指数失败（市场过滤不生效）:', e); }
+})();
 loadStockCatalog();
 initWeightGrid();
 loadPredictions();

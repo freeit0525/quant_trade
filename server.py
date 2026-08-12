@@ -130,6 +130,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_kline(params)
             elif parsed.path == "/api/kline_db":
                 self.api_kline_db(params)
+            elif parsed.path == "/api/index_kline":
+                self.api_index_kline(params)
             elif parsed.path == "/api/stock_list":
                 self.api_stock_list(params)
             elif parsed.path == "/api/stock_catalog":
@@ -480,6 +482,61 @@ class QuantHandler(SimpleHTTPRequestHandler):
             {"data": records, "stock": {"code": code, "name": _stock_name(code)}},
             200,
         )
+
+    def api_index_kline(self, params: dict):
+        """返回大盘指数日K线（默认沪深300 sh.000300，供买卖点预测的大盘情绪/波动率过滤使用）
+
+        库中无该指数或尾部缺口（最新数据距今>4天）时，自动用 baostock 增量拉取入库；
+        拉取失败（沙箱网络不可用等）时返回库内已有数据并提示。
+        """
+        import datetime as _dt
+        import sys as _sys
+
+        from database.db import get_kline, get_kline_max_date
+
+        code = (params.get("code") or "sh.000300").strip()
+        name = (params.get("name") or "沪深300指数").strip()
+
+        max_dt = get_kline_max_date(code)
+        today = _dt.date.today()
+        need_fetch = False
+        if not max_dt:
+            need_fetch = True
+        else:
+            try:
+                last = _dt.date.fromisoformat(max_dt)
+                need_fetch = (today - last).days > 4
+            except ValueError:
+                need_fetch = True
+
+        if need_fetch:
+            try:
+                _sys.path.insert(0, str(ROOT / "scripts"))
+                from fetch_index import _login_baostock, fetch_index
+
+                bs = _login_baostock()
+                if bs:
+                    try:
+                        fetch_index(bs, code, name, "")
+                    finally:
+                        try:
+                            bs.logout()
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning("指数增量拉取失败，返回库内已有数据: %s", e)
+
+        df = get_kline(code, "1900-01-01", "2100-01-01")
+        if df.empty:
+            self._send_json(
+                {"error": f"库中暂无 {code} 指数K线，可用本机执行 scripts\\fetch_index.py 拉取"},
+                404,
+            )
+            return
+        records = df.to_dict(orient="records")
+        for r in records:
+            r["date"] = r["date"].strftime("%Y-%m-%d")
+        self._send_json({"data": records, "index": {"code": code, "name": name}}, 200)
 
     def api_stock_list(self, params: dict):
         """返回库中已有K线数据的股票列表（供下拉选择）"""

@@ -107,7 +107,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="ui-modal.js"></script>
 <script src="query-history.js"></script>
-<script src="predict-engine.js?v=20260811"></script>
+<script src="predict-engine.js?v=20260812"></script>
 </head>
 <body>
 <div class="container">
@@ -115,7 +115,7 @@
     <h1>买卖点策略回测</h1>
     <a class="back" href="index.html">← 返回入口</a>
   </div>
-  <div class="subtitle">把买卖点信号做成可实盘的完整策略：次日开盘入场、T+1、止损/止盈/持仓到期、手续费印花税，输出资金曲线、最大回撤与盈亏比——验证信号命中率高是否真的能赚钱</div>
+  <div class="subtitle">把买卖点信号做成可实盘的完整策略：次日开盘入场、T+1、止损/止盈/持仓到期、手续费印花税，输出资金曲线、最大回撤与盈亏比——验证信号命中率高是否真的能赚钱。<b>定位说明：短线轮动策略的目标不是跑赢"等权买入持有"，而是控制回撤的同时获取正收益，评价重点看胜率、盈亏比、最大回撤与资金曲线稳定性</b>（长持基准仅作参照，短线高频交易必然面临更高的手续费与摩擦成本）</div>
 
   <!-- 股票与数据范围 -->
   <div class="panel">
@@ -187,7 +187,7 @@
         <label>信号来源</label>
         <div style="display:flex; gap:16px; padding-top:6px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
-            <input type="radio" name="sigMode" value="model" checked onchange="onSigModeChange()"> 模型信号（13因子）
+            <input type="radio" name="sigMode" value="model" checked onchange="onSigModeChange()"> 模型信号（12因子）
           </label>
           <label style="display:flex; align-items:center; gap:4px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
             <input type="radio" name="sigMode" value="rule" onchange="onSigModeChange()"> 超跌反弹规则
@@ -202,11 +202,11 @@
       <div class="row">
         <div class="field small">
           <label>买入阈值 BUY_TH</label>
-          <input type="number" id="buyTh" value="25" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号">
+          <input type="number" id="buyTh" value="35" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号（2026-08-12 调优：25→35）">
         </div>
         <div class="field small">
           <label>卖出阈值 SELL_TH</label>
-          <input type="number" id="sellTh" value="-25" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号">
+          <input type="number" id="sellTh" value="-35" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号（2026-08-12 调优：-25→-35）">
         </div>
         <div class="field" style="flex:0 0 auto; min-width:0;">
           <label>平仓方式</label>
@@ -235,7 +235,7 @@
       <div class="row">
         <div class="field small">
           <label>止损(%)</label>
-          <input type="number" id="stopLoss" value="5" min="0" max="20" step="0.5" title="0=不止损；当日最低价触及止损价即全平">
+          <input type="number" id="stopLoss" value="3" min="0" max="20" step="0.5" title="0=不止损；当日最低价触及止损价即全平。2026-08-12 50只全池扫参：止损3%为收益-回撤最优（Calmar 0.29，回撤 26.8% vs 止损5%的 39.0%），单笔亏损小、盈亏比 2.13">
         </div>
         <div class="field small">
           <label>止盈(%)</label>
@@ -243,11 +243,11 @@
         </div>
         <div class="field small">
           <label>持仓上限(交易日)</label>
-          <input type="number" id="maxHold" value="10" min="0" max="60" title="0=不限期；超过上限按当日收盘平仓">
+          <input type="number" id="maxHold" value="15" min="0" max="60" title="0=不限期；超过上限按当日收盘平仓。2026-08-12 扫参：10→15日让盈利单跑更久（总收益 +25%、Calmar 0.21→0.23）">
         </div>
         <div class="field small">
           <label>单笔仓位比例</label>
-          <input type="number" id="positionRatio" value="1" min="0.1" max="1" step="0.1" title="每笔用可用资金的该比例买入（100股整手）">
+          <input type="number" id="positionRatio" value="1" min="0.1" max="1" step="0.1" title="每笔用可用资金的该比例买入（100股整手）。2026-08-12 扫参：仓位只缩放收益与回撤（如0.5仓位回撤约减半），Calmar 不变">
         </div>
       </div>
       <div class="row" style="align-items:center;">
@@ -264,6 +264,13 @@
         </div>
       </div>
       <div class="hint">信号在收盘后产生，实盘只能在次日操作，故默认按次日开盘价成交；T+1 限制下一交易日才可卖出</div>
+      <div class="row" style="align-items:center; margin-top:8px;">
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+          <input type="checkbox" id="marketFilter" checked> 大盘波动率过滤（沪深300年化波动率 15%~45% 才允许模型买入信号）
+        </label>
+        <span id="marketStateInfo" class="hint" style="align-self:center; margin-left:10px;"></span>
+      </div>
+      <div class="hint">依据 2026-08-12 五十只全池+沪深300 回测：波动率过滤后策略 Calmar 0.28→0.47、回撤 28.4%→20.7%、年化 7.98%→9.72%；仅作用于「预测模型」入场模式，超跌规则模式不受影响；指数缺失日不过滤</div>
     </div>
 
     <div class="sub-block">
@@ -612,6 +619,7 @@ async function runStrategy() {
       takeProfit: parseFloat(document.getElementById('takeProfit').value) || 0,
       maxHold: parseInt(document.getElementById('maxHold').value) || 0,
       positionRatio: parseFloat(document.getElementById('positionRatio').value) || 1,
+      marketOn: document.getElementById('marketFilter').checked,
       priceMode: document.querySelector('input[name="priceMode"]:checked').value,
       initCapital: parseFloat(document.getElementById('initCapital').value) || 100000,
       commissionRate: parseFloat(document.getElementById('commissionRate').value) || 0,
@@ -684,7 +692,9 @@ async function runStrategy() {
       const entryIdx = [];
       let sellIdxSet = null;
       if (params.sigMode === 'model') {
-        const sigs = computeSignalsDual(rows, DEFAULT_WEIGHTS, DEFAULT_WEIGHTS_SELL, info);
+        // 大盘波动率过滤：传入 marketStates 后仅保留波动率适中日期的买入信号（卖出信号不过滤）
+        const sigs = computeSignalsDual(rows, DEFAULT_WEIGHTS, DEFAULT_WEIGHTS_SELL, info, params.buyTh, params.sellTh,
+          params.marketOn ? { marketStates: _marketStates } : undefined);
         sigs.forEach(sg => {
           if (sg.type === 'buy') entryIdx.push(sg.t);
         });
@@ -795,7 +805,7 @@ function renderResults(result, params, perStock) {
 
     <div class="panel">
       <h2>资金曲线（${stats.firstDate} ~ ${stats.lastDate}）</h2>
-      <div class="hint">红线=策略（含手续费，扣除全部费用后的权益）；绿线=同期等权买入持有全部所选股票组合（当天有数据的股票等权日涨幅复利）</div>
+      <div class="hint">红线=策略（含手续费，扣除全部费用后的权益）；绿线=同期等权买入持有全部所选股票组合（当天有数据的股票等权日涨幅复利）。<b>长持基准仅供横向参照</b>：短线轮动目标不是跑赢它，而是控制回撤、保持正收益；评价重点看下方胜率/盈亏比/最大回撤</div>
       <div class="chart-wrap"><div class="chart-canvas-wrap"><canvas id="eqChart"></canvas></div></div>
     </div>
 
@@ -831,7 +841,7 @@ function buildConclusion(stats, reasonAgg) {
   const vsBench = stats.benchReturn == null ? null : stats.totalReturn - stats.benchReturn;
   if (vsBench != null) {
     if (vsBench > 0.02) parts.push(`扣除费用后总收益 ${(stats.totalReturn * 100).toFixed(1)}%，跑赢等权持有基准 ${(vsBench * 100).toFixed(1)}pt，策略择时有正贡献`);
-    else if (stats.totalReturn > 0) parts.push(`总收益为正但未跑赢等权持有基准（差 ${(vsBench * 100).toFixed(1)}pt），择时收益不足以覆盖持仓期波动`);
+    else if (stats.totalReturn > 0) parts.push(`总收益 ${(stats.totalReturn * 100).toFixed(1)}% 为正但未跑赢等权持有基准（差 ${(vsBench * 100).toFixed(1)}pt）——短线轮动以控制回撤为主，跑输长持属正常现象，重点看胜率 ${(stats.winRate * 100).toFixed(1)}% 与盈亏比 ${stats.plr != null ? stats.plr.toFixed(2) : '-'}是否健康`);
     else parts.push(`总收益为负（${(stats.totalReturn * 100).toFixed(1)}%），信号命中率高不等于能赚钱——需检查止损设置或信号本身`);
   } else {
     parts.push(`总收益率 ${(stats.totalReturn * 100).toFixed(1)}%`);
@@ -927,6 +937,24 @@ function drawTradePage(dir) {
 }
 
 // ============ 页面初始化 ============
+let _marketStates = null; // Map(date -> 大盘状态)，用于模型买入信号波动率过滤
+(async function loadMarketIndex() {
+  try {
+    const res = await fetch(`${API_BASE}/api/index_kline`);
+    const data = await res.json();
+    if (data.error || !data.data || !data.data.length) {
+      document.getElementById('marketStateInfo').textContent = '大盘指数未加载（过滤不生效）';
+      return;
+    }
+    const idxRows = data.data.map(k => ({ date: k.date, close: v(k.close) }));
+    _marketStates = computeMarketState(idxRows);
+    const last = idxRows[idxRows.length - 1];
+    document.getElementById('marketStateInfo').textContent = `已加载 ${data.index?.name || '沪深300指数'}（${idxRows.length} 根K线，最新 ${last.date} 收盘 ${last.close}）`;
+  } catch (e) {
+    console.warn('加载大盘指数失败（市场过滤不生效）:', e);
+    document.getElementById('marketStateInfo').textContent = '大盘指数加载失败（过滤不生效）';
+  }
+})();
 loadStockList();
 onSigModeChange();
 (function initRangeUI() {

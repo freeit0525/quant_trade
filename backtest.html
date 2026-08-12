@@ -1358,7 +1358,7 @@ function signalVr(ctx) {
 }
 
 // 策略分发表：strategy 字符串 → 对应的信号生成函数
-// ============ 预测模型信号（复用 predict-engine.js 13因子引擎，与预测页同权重） ============
+// ============ 预测模型信号（复用 predict-engine.js 12因子引擎，与预测页同权重） ============
 // 把 backtest 的 ohlc 转为预测引擎 rows（字段名对齐 + 附加 OBV 序列）
 function buildPredictRows(ohlc) {
   const rows = ohlc.map(k => ({
@@ -1383,7 +1383,7 @@ function buildPredictRows(ohlc) {
   return rows;
 }
 
-// 策略：预测模型-13因子买卖点（买入阈值25+跃升8，卖出-25+回落8，权重同预测页默认）
+// 策略：预测模型-12因子买卖点（买入阈值25+跃升8，卖出-25+回落8，权重同预测页默认）
 function signalPredictModel(ctx) {
   const { n, signals, sellSource, ohlc } = ctx;
   const rows = buildPredictRows(ohlc);
@@ -2387,7 +2387,7 @@ const STRATEGY_DESC = {
   volShrink: '<strong>地量见地价策略</strong>：成交量萎缩到均量×阈值以下(地量，抛压枯竭)且当日收阳(企稳)买入；放量收阴(可能见顶)卖出。适合抄底。',
   volDivergence: '<strong>量价背离策略</strong>：价格创前N日新低但成交量未同步创新低(底背离，有资金承接)买入；价格创前N日新高但成交量未同步放大(顶背离，动能衰竭)卖出。',
   vr: '<strong>VR成交量变异率策略</strong>：VR=(上涨日量+0.5×平盘日量)/(下跌日量+0.5×平盘日量)×100。VR从低位区上穿(超卖回升)买入；从高位区下穿(超买回落)卖出。',
-  predictModel: '<strong>预测模型-13因子买卖点</strong>：复用预测引擎（与 predict.html 同权重）。综合评分 Sbuy≥25 且较前日跃升超过8 → <strong style="color:#e8453c">买入</strong>；Ssell≤-25 且较前日回落超过8 → <strong style="color:#34a853">卖出</strong>。13因子含短期涨跌幅/乖离率/KDJ/RSI/量能/主力资金等。适合结合本页分批加仓/波段/止损止盈使用。',
+  predictModel: '<strong>预测模型-12因子买卖点</strong>：复用预测引擎（与 predict.html 同权重）。综合评分 Sbuy≥25 且较前日跃升超过8 → <strong style="color:#e8453c">买入</strong>；Ssell≤-25 且较前日回落超过8 → <strong style="color:#34a853">卖出</strong>。12因子含短期涨跌幅/乖离率/KDJ/RSI/量能/主力资金等（基本面因子已停用）。适合结合本页分批加仓/波段/止损止盈使用。',
   oversoldRule: '<strong>超跌反弹规则</strong>：近5日累计跌幅≥8% 且当日收阳 → <strong style="color:#e8453c">买入</strong>（超跌企稳）；近5日累计涨幅≥12% → <strong style="color:#34a853">卖出</strong>（短线获利了结）。'
 };
 

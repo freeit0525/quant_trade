@@ -1,61 +1,62 @@
 # -*- coding: utf-8 -*-
-"""临时脚本：从库导出全部股票K线与info到 JSON，供 Node 信号质量实验使用。用完删除。"""
+# 临时脚本：导出 50 只全池 + 沪深300 指数到 _kline_data.json（供 Node 因子实验）
 import json
-import sys
-import os
+import math
+from datetime import datetime, date
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pandas as pd
+
 from database.db import db_cursor, get_kline
 
-COLS = [
-    "date", "open", "high", "low", "close", "volume", "amount", "turnover",
-    "pct_change", "volume_ratio", "main_net_inflow",
-    "macd_dif", "macd_dea", "macd_hist",
-    "ma5", "ma10", "ma20", "ma30",
-    "rsi6", "rsi14", "kdj_k", "kdj_d", "kdj_j",
-    "bias5", "bias10", "bias20",
-]
+OUT = '_kline_data.json'
+
+
+def clean(obj):
+    """把 NaN/Infinity 转 None、Timestamp 转 'YYYY-MM-DD'，保证 JSON 合法"""
+    if isinstance(obj, dict):
+        return {k: clean(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [clean(x) for x in obj]
+    if isinstance(obj, (pd.Timestamp, datetime, date)):
+        return obj.strftime('%Y-%m-%d')
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
 
 
 def main():
+    # 股票池：直接取库内有 K 线数据的股票（即当前全池），排除指数
     with db_cursor() as cur:
         cur.execute("SELECT DISTINCT symbol FROM market_data.daily_kline ORDER BY symbol")
-        syms = [r[0] for r in cur.fetchall()]
-        cur.execute("SELECT symbol, name, list_date, float_market_cap, total_market_cap FROM market_data.stock_info WHERE symbol = ANY(%s) ORDER BY symbol",
-                    (syms,))
-        infos = cur.fetchall()
-    out = []
-    for symbol, name, list_date, float_cap, total_cap in infos:
-        df = get_kline(symbol, "19000101", "20991231")
-        if df.empty:
+        symbols = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT symbol, name FROM market_data.stock_info")
+        names = dict(cur.fetchall())
+    stocks = []
+    for symbol in symbols:
+        if symbol.startswith('sh.000') or symbol.startswith('sz.399') or symbol.startswith('bj.8'):
             continue
-        df = df[COLS]
-        df = df.where(df.notna(), None)
-        rows = []
-        for _, r in df.iterrows():
-            row = {}
-            for c in COLS:
-                val = r[c]
-                if hasattr(val, "item"):
-                    val = val.item()
-                if c == "date":
-                    row[c] = val.strftime("%Y-%m-%d") if hasattr(val, "strftime") else str(val)
-                else:
-                    row[c] = None if val is None else float(val)
-            rows.append(row)
-        out.append({
-            "symbol": symbol,
-            "name": name,
-            "list_date": list_date.strftime("%Y-%m-%d") if hasattr(list_date, "strftime") else list_date,
-            "float_market_cap": float(float_cap) if float_cap is not None else None,
-            "total_market_cap": float(total_cap) if total_cap is not None else None,
-            "rows": rows,
-        })
-        print(f"{symbol} {name} {len(rows)} rows")
-    with open("_kline_data.json", "w", encoding="utf-8") as f:
-        json.dump({"stocks": out}, f, ensure_ascii=False)
-    print(f"total {len(out)} stocks -> _kline_data.json")
+        name = names.get(symbol, symbol)
+        df = get_kline(symbol, '1990-01-01', '2099-12-31')
+        if df is None or df.empty:
+            print(f'skip {symbol} ({name}) empty')
+            continue
+        rows = clean(df.to_dict('records'))
+        stocks.append({'symbol': symbol, 'name': name, 'rows': rows})
+        print(f'{symbol} {name}: {len(rows)} rows')
+
+    # 沪深300 指数（市场过滤用）
+    idx = None
+    idf = get_kline('sh.000300', '1990-01-01', '2099-12-31')
+    if idf is not None and not idf.empty:
+        idx = {'symbol': 'sh.000300', 'rows': clean(idf.to_dict('records'))}
+        print(f'index sh.000300: {len(idf)} rows')
+    else:
+        print('WARN: sh.000300 empty')
+
+    with open(OUT, 'w', encoding='utf-8') as f:
+        json.dump({'stocks': stocks, 'index': idx}, f, ensure_ascii=False)
+    print(f'saved {OUT}: {len(stocks)} stocks')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

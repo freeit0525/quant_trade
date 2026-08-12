@@ -106,7 +106,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="ui-modal.js"></script>
 <script src="query-history.js"></script>
-<script src="predict-engine.js?v=20260811"></script>
+<script src="predict-engine.js?v=20260812"></script>
 </head>
 <body>
 <div class="container">
@@ -114,7 +114,7 @@
     <h1>买卖点回测</h1>
     <a class="back" href="index.html">← 返回入口</a>
   </div>
-  <div class="subtitle">用库中现有股票数据批量回测买卖点预测模型：沿用预测页同样的13因子评分与信号判定口径，统计信号命中率、收益与因子有效性，找出模型不足</div>
+  <div class="subtitle">用库中现有股票数据批量回测买卖点预测模型：沿用预测页同样的12因子评分与信号判定口径，统计信号命中率、收益与因子有效性，找出模型不足</div>
 
   <!-- 股票与数据范围 -->
   <div class="panel">
@@ -186,11 +186,11 @@
     <div class="row">
       <div class="field small">
         <label>买入阈值 BUY_TH</label>
-        <input type="number" id="buyTh" value="25" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号">
+        <input type="number" id="buyTh" value="35" min="5" max="50" title="评分≥该值且较前日跃升超过8分 → 买入信号（2026-08-12 调优：25→35 后后5日收益率命中率 53.2%→60.4%）">
       </div>
       <div class="field small">
         <label>卖出阈值 SELL_TH</label>
-        <input type="number" id="sellTh" value="-25" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号">
+        <input type="number" id="sellTh" value="-35" min="-50" max="-5" title="评分≤该值且较前日下降超过8分 → 卖出信号（2026-08-12 调优：-25→-35 后卖出信号后5日均收益 -0.68%，显著强于随机+0.55%）">
       </div>
       <div class="field small">
         <label>评价周期 N 日</label>
@@ -203,7 +203,15 @@
         </select>
       </div>
     </div>
-    <div class="hint">命中口径与预测页一致：买入信号 N 日后上涨=命中，卖出信号 N 日后下跌=命中；其余为未命中（N 日窗口不足时不统计）</div>
+    <div class="hint">主口径为<b>后 N 日收益率</b>（买入后 N 日收盘上涨=命中，卖出后 N 日收盘下跌=命中），命中率需与"随机入场基线"对比才有意义；默认阈值 BUY_TH=35 / SELL_TH=-35（2026-08-12 全库回测调优：买入命中率 60.4%、基线 49.1%）</div>
+
+    <div class="row" style="margin-top:10px; align-items:center;">
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#444; cursor:pointer; white-space:nowrap;">
+        <input type="checkbox" id="marketFilter" checked> 大盘波动率过滤（沪深300年化波动率 15%~45% 才允许买入信号）
+      </label>
+      <span id="marketStateInfo" class="hint" style="align-self:center; margin-left:10px;"></span>
+    </div>
+    <div class="hint" style="margin-top:4px;">依据 2026-08-12 五十只全池 + 沪深300 回测：波动率过滤后 Calmar 0.28→0.47、回撤 28.4%→20.7%、年化 7.98%→9.72%；指数数据缺失的日期不过滤（回退兼容）</div>
 
     <div class="row" style="margin-top:10px; align-items:center;">
       <div class="field" style="flex:1;">
@@ -380,7 +388,8 @@ function showFactorDesc(key) {
 
 // ============ 回测核心 ============
 // 对单只股票：全量逐日双向评分（买入/卖出各一套权重）→ 生成信号 → 评价 N 日收益
-function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays) {
+// 返回 { results, baseline }：baseline 为该股全样本随机入场后 N 日收益率基线（权威对比口径）
+function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays, marketStates, marketOn) {
   // 附加 OBV 预计算（引擎 factorOBV 自动复用，避免每根K线 O(n²) 重建）
   if (!rows.__obv) {
     const obv = [0];
@@ -398,11 +407,17 @@ function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, ev
   }
 
   const signals = [];
+  let filteredBuy = 0;
   let prevBuy = null, prevSell = null;
   for (let t = 40; t < rows.length; t++) {
     const { Sbuy, Ssell, parts } = scoreAtDual(rows, t, weightsBuy, weightsSell, info);
     if (prevBuy != null && Sbuy >= buyTh && prevBuy < buyTh - 8) {
-      signals.push({ t, type: 'buy', S: Sbuy, parts });
+      // 大盘波动率过滤：默认开，指数数据缺失日视为通过
+      if (!marketOn || !marketStates || marketFilterAllow(marketStates.get(rows[t].date))) {
+        signals.push({ t, type: 'buy', S: Sbuy, parts });
+      } else {
+        filteredBuy++;
+      }
     }
     if (prevSell != null && Ssell <= sellTh && prevSell > sellTh + 8) {
       signals.push({ t, type: 'sell', S: Ssell, parts });
@@ -426,7 +441,21 @@ function backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, ev
       }
     }
   });
-  return results;
+
+  // 随机入场基线：该股全样本任意一天后 N 日收益（与信号同区间，权威对比口径）
+  let bsCnt = 0, bsUp = 0, bsSum = 0;
+  for (let t = 40; t + evalDays < rows.length; t++) {
+    const c0 = v(rows[t].close), cn = v(rows[t + evalDays].close);
+    if (c0 == null || c0 <= 0 || cn == null) continue;
+    const r = cn / c0 - 1;
+    bsCnt++; if (r > 0) bsUp++; bsSum += r;
+  }
+  const baseline = {
+    hitUp: bsCnt ? bsUp / bsCnt * 100 : null,
+    avgRet: bsCnt ? bsSum / bsCnt * 100 : null,
+    n: bsCnt,
+  };
+  return { results, baseline, filteredBuy };
 }
 
 // 因子有效性：命中组 vs 未命中组各因子平均分差（正=有效，负=反向）
@@ -480,6 +509,7 @@ function strengthBands(results, buyTh, sellTh) {
 
 // ============ 主回测流程 ============
 let _allResults = [];
+let _baselineCnt = 0, _baselineUp = 0, _baselineSum = 0; // 随机入场基线聚合（按样本数加权）
 async function runBacktest() {
   const btn = document.getElementById('runBtn');
   const statusEl = document.getElementById('runStatus');
@@ -501,11 +531,14 @@ async function runBacktest() {
   _wtBuf[_wtTab] = getWeights();
   const weightsBuy = getWeightsByTab('buy');
   const weightsSell = getWeightsByTab('sell');
+  const marketOn = document.getElementById('marketFilter').checked;
   btn.disabled = true;
   btn.textContent = '回测中...';
   statusEl.textContent = '';
 
   _allResults = [];
+  _baselineCnt = 0; _baselineUp = 0; _baselineSum = 0; // 随机入场基线聚合（按样本数加权）
+  let filteredBuy = 0;
   let done = 0;
   for (const code of codes) {
     statusEl.textContent = `正在回测 ${code}（${done + 1}/${codes.length}）...`;
@@ -539,8 +572,14 @@ async function runBacktest() {
         if (!idata.error) info = { ...info, ...idata };
       } catch (e) { console.warn('获取股票信息失败:', code, e); }
 
-      const resList = backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays);
+      const { results: resList, baseline: bs, filteredBuy: fb } = backtestOneStock(rows, info, weightsBuy, weightsSell, buyTh, sellTh, evalDays, _marketStates, marketOn);
       resList.forEach(r => _allResults.push(r));
+      filteredBuy += fb;
+      if (bs.n) {
+        _baselineCnt += bs.n;
+        _baselineUp += bs.hitUp * bs.n;
+        _baselineSum += bs.avgRet * bs.n;
+      }
     } catch (e) {
       statusEl.textContent += ` ${code}出错: ${e.message}`;
     }
@@ -551,6 +590,9 @@ async function runBacktest() {
   btn.disabled = false;
   btn.textContent = '开始回测';
   statusEl.textContent = `完成：${_allResults.length} 个可评价信号`;
+  if (marketOn && _marketStates) {
+    statusEl.textContent += `；大盘波动率过滤剔除买入信号 ${filteredBuy} 个`;
+  }
   renderResults(buyTh, sellTh, evalDays, codes.length);
 }
 
@@ -575,20 +617,28 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
   const b = agg(buy), s = agg(sell);
   const all = agg(results);
 
-  // 全样本基准：所有可评价日期的 N 日上涨比例（用于对比信号是否有区分度）
-  // 简化：用每只股票全样本 N 日涨跌方向采样——此处用信号样本同期的随机性说明，不额外计算
+  // 随机入场基线（权威对比口径）：所选股票全样本任意一天后 N 日收益，按样本数加权
+  const baselineHitUp = _baselineCnt ? _baselineUp / _baselineCnt : null;
+  const baselineAvgRet = _baselineCnt ? _baselineSum / _baselineCnt : null;
+  const buyExcess = (b.rate != null && baselineHitUp != null) ? b.rate - baselineHitUp : null;
+  const sellExcess = (s.rate != null && baselineHitUp != null) ? s.rate - (100 - baselineHitUp) : null;
   const chips = `
     <div class="stat-chips">
+      <div class="chip"><span class="k">随机入场基线·后${evalDays}日上涨</span><span class="v">${baselineHitUp == null ? '-' : baselineHitUp.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">随机入场基线·均收益</span><span class="v">${baselineAvgRet == null ? '-' : (baselineAvgRet >= 0 ? '+' : '') + baselineAvgRet.toFixed(2) + '%'}</span></div>
       <div class="chip"><span class="k">可评价信号</span><span class="v">${results.length}</span></div>
       <div class="chip"><span class="k">买入信号数</span><span class="v up">${b.cnt}</span></div>
-      <div class="chip"><span class="k">买入命中率</span><span class="v up">${b.rate == null ? '-' : b.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">买入命中率(后${evalDays}日收盘涨)</span><span class="v up">${b.rate == null ? '-' : b.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">买入超额(命中-基线)</span><span class="v ${buyExcess == null ? '' : (buyExcess >= 0 ? 'up' : 'down')}">${buyExcess == null ? '-' : (buyExcess >= 0 ? '+' : '') + buyExcess.toFixed(1) + 'pt'}</span></div>
       <div class="chip"><span class="k">买入均收益(${evalDays}日)</span><span class="v ${b.avgRet >= 0 ? 'up' : 'down'}">${b.avgRet == null ? '-' : (b.avgRet >= 0 ? '+' : '') + b.avgRet.toFixed(2) + '%'}</span></div>
       <div class="chip"><span class="k">买入盈亏比</span><span class="v">${b.plr == null ? '-' : b.plr.toFixed(2)}</span></div>
       <div class="chip"><span class="k">卖出信号数</span><span class="v down">${s.cnt}</span></div>
-      <div class="chip"><span class="k">卖出命中率</span><span class="v down">${s.rate == null ? '-' : s.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">卖出命中率(后${evalDays}日收盘跌)</span><span class="v down">${s.rate == null ? '-' : s.rate.toFixed(1) + '%'}</span></div>
+      <div class="chip"><span class="k">卖出超额(命中-基线)</span><span class="v ${sellExcess == null ? '' : (sellExcess >= 0 ? 'down' : 'up')}">${sellExcess == null ? '-' : (sellExcess >= 0 ? '+' : '') + sellExcess.toFixed(1) + 'pt'}</span></div>
       <div class="chip"><span class="k">卖出均收益(${evalDays}日)</span><span class="v ${s.avgRet >= 0 ? 'up' : 'down'}">${s.avgRet == null ? '-' : (s.avgRet >= 0 ? '+' : '') + s.avgRet.toFixed(2) + '%'}</span></div>
       <div class="chip"><span class="k">卖出盈亏比</span><span class="v">${s.plr == null ? '-' : s.plr.toFixed(2)}</span></div>
     </div>`;
+  const baselineHint = baselineHitUp != null ? `<div class="hint" style="margin-top:8px">命中率必须与<b>随机入场基线</b>对比才有意义：高波动股"盘中触及"天然偏高，本页以<b>后${evalDays}日收益率</b>为主口径。买入信号命中率高出基线越多说明信号越有效（正超额）；卖出命中率基线 = ${(100 - baselineHitUp).toFixed(1)}%（下跌概率）。</div>` : '';
 
   // 分股票统计
   const byStock = {};
@@ -644,7 +694,7 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
     </tr>`).join('');
 
   // 结论
-  const conclusion = buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt);
+  const conclusion = buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt, baselineHitUp);
 
   // 信号明细（分页）——必须在 area.innerHTML 赋值后再渲染（signalTableWrap 此时才存在）
   const signalInit = () => renderSignalTable(results, evalDays);
@@ -653,6 +703,7 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
     <div class="panel">
       <h2>回测汇总（${stockCnt} 只股票 | N=${evalDays} 日 | 信号口径 BUY≥${buyTh}/SELL≤${sellTh} 且跃升>8分）</h2>
       ${chips}
+      ${baselineHint}
       <div class="note-box"><strong>找不足 · 结论：</strong>${conclusion}</div>
     </div>
 
@@ -700,12 +751,13 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
   signalInit();
 }
 
-function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt) {
+function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt, baselineHitUp) {
   const parts = [];
-  const base = 50; // 随机方向概率基准
+  const baseBuy = baselineHitUp != null ? baselineHitUp : 50; // 随机入场基线（后N日上涨概率）
+  const baseSell = baselineHitUp != null ? 100 - baselineHitUp : 50; // 卖出基线=下跌概率
   if (b.cnt >= 10) {
-    const d = b.rate - base;
-    parts.push(`买入信号 ${b.cnt} 次命中率 ${b.rate.toFixed(1)}%（${d >= 0 ? '高于' : '低于'}随机基准50%${Math.abs(d).toFixed(1)}pt）`);
+    const d = b.rate - baseBuy;
+    parts.push(`买入信号 ${b.cnt} 次命中率 ${b.rate.toFixed(1)}%（随机基线${baseBuy.toFixed(1)}%，${d >= 0 ? '超额+' : '超额'}${Math.abs(d).toFixed(1)}pt）`);
     if (b.avgRet != null) parts.push(`买入均收益 ${b.avgRet >= 0 ? '+' : ''}${b.avgRet.toFixed(2)}%`);
   } else if (b.cnt > 0) {
     parts.push(`买入信号仅 ${b.cnt} 次（样本不足）`);
@@ -713,8 +765,8 @@ function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt) {
     parts.push('买入信号为 0（阈值过严或数据特征所致）');
   }
   if (s.cnt >= 10) {
-    const d = s.rate - base;
-    parts.push(`卖出信号 ${s.cnt} 次命中率 ${s.rate.toFixed(1)}%（${d >= 0 ? '高于' : '低于'}随机基准${Math.abs(d).toFixed(1)}pt）`);
+    const d = s.rate - baseSell;
+    parts.push(`卖出信号 ${s.cnt} 次命中率 ${s.rate.toFixed(1)}%（随机基线${baseSell.toFixed(1)}%，${d >= 0 ? '超额+' : '超额'}${Math.abs(d).toFixed(1)}pt）`);
     if (s.avgRet != null) parts.push(`卖出均收益 ${s.avgRet >= 0 ? '+' : ''}${s.avgRet.toFixed(2)}%（负值代表卖出后下跌、信号有效）`);
   } else if (s.cnt > 0) {
     parts.push(`卖出信号仅 ${s.cnt} 次（样本不足）`);
@@ -808,6 +860,24 @@ function drawRetChart(results, evalDays) {
 }
 
 // ============ 页面初始化 ============
+let _marketStates = null; // Map(date -> 大盘状态)，用于买入信号波动率过滤
+(async function loadMarketIndex() {
+  try {
+    const res = await fetch(`${API_BASE}/api/index_kline`);
+    const data = await res.json();
+    if (data.error || !data.data || !data.data.length) {
+      document.getElementById('marketStateInfo').textContent = '大盘指数未加载（过滤不生效）';
+      return;
+    }
+    const idxRows = data.data.map(k => ({ date: k.date, close: v(k.close) }));
+    _marketStates = computeMarketState(idxRows);
+    const last = idxRows[idxRows.length - 1];
+    document.getElementById('marketStateInfo').textContent = `已加载 ${data.index?.name || '沪深300指数'}（${idxRows.length} 根K线，最新 ${last.date} 收盘 ${last.close}）`;
+  } catch (e) {
+    console.warn('加载大盘指数失败（市场过滤不生效）:', e);
+    document.getElementById('marketStateInfo').textContent = '大盘指数加载失败（过滤不生效）';
+  }
+})();
 loadStockList();
 initWeightGrid();
 (function initRangeUI() {
