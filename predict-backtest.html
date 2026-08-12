@@ -526,6 +526,7 @@ async function runBacktest() {
 
   let range;
   try { range = buildRangeParams(); } catch (e) { showError(e.message); return; }
+  _btRange = range; // 供「信号K线图（单股）」复用同一数据范围
 
   // 保存当前 tab 控件值，再取买入/卖出两套权重
   _wtBuf[_wtTab] = getWeights();
@@ -745,10 +746,26 @@ function renderResults(buyTh, sellTh, evalDays, stockCnt) {
       <h2>信号明细（分页，按日期倒序）</h2>
       <div id="signalTableWrap"></div>
     </div>
+
+    <div class="panel">
+      <h2>信号K线图（单股查看，标记回测信号位置）</h2>
+      <div class="row" style="align-items:center;">
+        <div class="field small">
+          <label>选择股票</label>
+          <select id="sigKlineStock"><option value="">— 选择回测股票 —</option></select>
+        </div>
+        <button class="secondary" onclick="viewSigKline()" style="align-self:flex-end;">查看信号K线</button>
+        <span class="hint" style="align-self:center;">▲买入信号 / ▼卖出信号（标注5日收益），仅展示本页回测产生的信号</span>
+      </div>
+      <div class="chart-wrap" style="display:none;" id="sigKlineWrap">
+        <div class="chart-canvas-wrap" style="height:380px;"><canvas id="sigKlineChart"></canvas></div>
+      </div>
+    </div>
   `;
 
   drawRetChart(results, evalDays);
   signalInit();
+  fillSigKlineStock(results);
 }
 
 function buildConclusion(b, s, all, evalDays, faGood, faBad, stockCnt, baselineHitUp) {
@@ -857,6 +874,198 @@ function drawRetChart(results, evalDays) {
       },
     },
   });
+}
+
+// ============ 信号K线图（单股，承接预测页移过来的历史信号标记） ============
+let _btRange = null; // 最近一次回测的数据范围（runBacktest 中赋值）
+let _sigKlineChartRef = null;
+function fillSigKlineStock(results) {
+  const sel = document.getElementById('sigKlineStock');
+  if (!sel) return;
+  const syms = [...new Set(results.map(r => r.symbol))].sort();
+  sel.innerHTML = '<option value="">— 选择回测股票 —</option>' + syms.map(s => {
+    const first = results.find(r => r.symbol === s);
+    const cnt = results.filter(r => r.symbol === s).length;
+    return `<option value="${s}">${s} ${first ? first.name || '' : ''}（${cnt}信号）</option>`;
+  }).join('');
+}
+async function viewSigKline() {
+  const sel = document.getElementById('sigKlineStock');
+  const code = sel ? sel.value : '';
+  if (!code) { showError('请先选择股票'); return; }
+  if (!_btRange) { showError('请先运行回测'); return; }
+  const wrap = document.getElementById('sigKlineWrap');
+  try {
+    const res = await fetch(`${API_BASE}/api/kline_db?code=${code}&beg=${_btRange.beg}&end=${_btRange.end}`);
+    const data = await res.json();
+    if (!data.data || !data.data.length) { showError('该股K线加载失败，请检查数据范围'); return; }
+    const rows = data.data.map(k => ({
+      date: k.date, open: v(k.open), close: v(k.close), high: v(k.high), low: v(k.low),
+      volume: v(k.volume), amount: v(k.amount),
+      pct_change: v(k.pct_change), volume_ratio: v(k.volume_ratio), main_net_inflow: v(k.main_net_inflow),
+    }));
+    const sigMap = new Map();
+    _allResults.forEach(r => { if (r.symbol === code) sigMap.set(r.date, r); });
+    const markers = [];
+    rows.forEach((k, t) => { const sg = sigMap.get(k.date); if (sg) markers.push({ t, type: sg.type, S: sg.S, retN: sg.retN }); });
+    wrap.style.display = 'block';
+    drawSigKline(rows, markers);
+  } catch (e) {
+    showError('加载信号K线失败: ' + e.message);
+  }
+}
+function drawSigKline(rows, markers) {
+  const canvas = document.getElementById('sigKlineChart');
+  if (!canvas) return;
+  if (_sigKlineChartRef) {
+    _sigKlineChartRef.canvas.onmousemove = null;
+    _sigKlineChartRef.canvas.onmouseleave = null;
+    _sigKlineChartRef = null;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth;
+  const cssH = canvas.parentElement.clientHeight;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const data = rows;
+  const labels = data.map(r => r.date);
+  const markerAt = new Map(markers.map(m => [m.t, m]));
+  const W = cssW, H = cssH;
+  const padL = 44, padR = 44, padT = 10, padB = 24;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  let maxP = -Infinity, minP = Infinity;
+  data.forEach(k => { maxP = Math.max(maxP, k.high); minP = Math.min(minP, k.low); });
+  const lastClose = data[data.length - 1].close;
+  maxP = Math.max(maxP, lastClose); minP = Math.min(minP, lastClose);
+  const rangeP = maxP - minP || 1;
+  maxP += rangeP * 0.10; minP -= rangeP * 0.06;
+
+  const n = data.length;
+  const slot = chartW / n;
+  const bodyW = Math.max(2, slot * 0.6);
+  const yOf = price => padT + (maxP - price) / (maxP - minP) * chartH;
+  const xOf = i => padL + slot * (i + 0.5);
+
+  let hoverIdx = -1;
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = '#f0f0f0'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#888'; ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const gridCount = 5;
+    for (let i = 0; i <= gridCount; i++) {
+      const price = maxP - (maxP - minP) * i / gridCount;
+      const y = padT + chartH * i / gridCount;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
+      ctx.fillText(price.toFixed(2), padL + chartW + 4, y);
+    }
+    if (hoverIdx >= 0) {
+      const hx = xOf(hoverIdx);
+      ctx.strokeStyle = '#999'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + chartH); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    data.forEach((k, i) => {
+      const x = xOf(i);
+      const isUp = k.close >= k.open;
+      const color = isUp ? '#e8453c' : '#34a853';
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, yOf(k.high)); ctx.lineTo(x, yOf(k.low)); ctx.stroke();
+      const yOpen = yOf(k.open), yClose = yOf(k.close);
+      const bodyTop = Math.min(yOpen, yClose);
+      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+      ctx.fillRect(x - bodyW / 2, bodyTop, bodyW, bodyH);
+      ctx.strokeRect(x - bodyW / 2, bodyTop, bodyW, bodyH);
+    });
+    markers.forEach(m => {
+      const x = xOf(m.t);
+      const k = data[m.t];
+      if (m.type === 'buy') {
+        ctx.fillStyle = '#e8453c';
+        ctx.beginPath();
+        ctx.moveTo(x, yOf(k.low) + 12);
+        ctx.lineTo(x - 7, yOf(k.low) + 22);
+        ctx.lineTo(x + 7, yOf(k.low) + 22);
+        ctx.closePath(); ctx.fill();
+      } else {
+        ctx.fillStyle = '#34a853';
+        ctx.beginPath();
+        ctx.moveTo(x, yOf(k.high) - 12);
+        ctx.lineTo(x - 7, yOf(k.high) - 22);
+        ctx.lineTo(x + 7, yOf(k.high) - 22);
+        ctx.closePath(); ctx.fill();
+      }
+    });
+    ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const labelStep = Math.max(1, Math.ceil(n / 8));
+    for (let i = 0; i < n; i += labelStep) {
+      const lb = labels[i] || '';
+      ctx.fillStyle = '#888';
+      ctx.fillText(lb.length > 5 ? lb.slice(5) : lb, xOf(i), padT + chartH + 4);
+    }
+    if (hoverIdx >= 0) drawTooltip(hoverIdx);
+  }
+  function drawTooltip(idx) {
+    const k = data[idx];
+    const isUp = k.close >= k.open;
+    const color = isUp ? '#e8453c' : '#34a853';
+    const m = markerAt.get(idx);
+    const rowsTip = [
+      { label: '日期', value: k.date, color: '#333' },
+      { label: '开盘', value: k.open.toFixed(2), color: color },
+      { label: '收盘', value: k.close.toFixed(2), color: color },
+      { label: '最高', value: k.high.toFixed(2), color: '#e8453c' },
+      { label: '最低', value: k.low.toFixed(2), color: '#34a853' },
+      { label: '涨跌幅', value: (k.pct_change >= 0 ? '+' : '') + k.pct_change.toFixed(2) + '%', color: color },
+    ];
+    if (m) {
+      rowsTip.push({ label: '信号', value: m.type === 'buy' ? '买入' : '卖出', color: m.type === 'buy' ? '#e8453c' : '#34a853' });
+      rowsTip.push({ label: '评分', value: (m.S >= 0 ? '+' : '') + m.S.toFixed(0), color: m.S >= 0 ? '#e8453c' : '#34a853' });
+      if (m.retN != null) rowsTip.push({ label: 'N日收益', value: (m.retN >= 0 ? '+' : '') + (m.retN * 100).toFixed(2) + '%', color: m.retN >= 0 ? '#e8453c' : '#34a853' });
+    }
+    const lineH = 16, padX = 10, padY = 8;
+    ctx.font = '12px Consolas, monospace';
+    let maxLw = 0, maxVw = 0;
+    rowsTip.forEach(r => { maxLw = Math.max(maxLw, ctx.measureText(r.label).width); maxVw = Math.max(maxVw, ctx.measureText(r.value).width); });
+    const boxW = maxLw + maxVw + 24;
+    const boxH = rowsTip.length * lineH + padY * 2;
+    const kx = xOf(idx);
+    let bx = kx + 16;
+    if (bx + boxW > W - padR) bx = kx - 16 - boxW;
+    if (bx < padL) bx = padL;
+    let by = padT + 8;
+    if (by + boxH > padT + chartH) by = padT + chartH - boxH;
+    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.rect(bx, by, boxW, boxH); ctx.fill(); ctx.stroke();
+    ctx.font = '12px Consolas, monospace'; ctx.textBaseline = 'middle';
+    rowsTip.forEach((r, i) => {
+      const y = by + padY + i * lineH + lineH / 2;
+      ctx.fillStyle = '#888'; ctx.textAlign = 'left';
+      ctx.fillText(r.label, bx + padX, y);
+      ctx.fillStyle = r.color; ctx.textAlign = 'right';
+      ctx.fillText(r.value, bx + boxW - padX, y);
+    });
+  }
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx < padL || mx > padL + chartW || my < padT || my > padT + chartH) {
+      if (hoverIdx !== -1) { hoverIdx = -1; render(); }
+      return;
+    }
+    const idx = Math.floor((mx - padL) / slot);
+    if (idx >= 0 && idx < n && idx !== hoverIdx) { hoverIdx = idx; render(); }
+  };
+  canvas.onmouseleave = () => { if (hoverIdx !== -1) { hoverIdx = -1; render(); } };
+  _sigKlineChartRef = { canvas };
+  render();
 }
 
 // ============ 页面初始化 ============

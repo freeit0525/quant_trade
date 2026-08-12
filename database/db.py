@@ -1008,6 +1008,34 @@ def get_predictions(
             if d.get(key) is not None:
                 d[key] = float(d[key])
         result.append(d)
+
+    # 后5日涨跌（辅助口径，次日复盘为主口径）：基于日之后第5个交易日收盘 vs 基于日收盘
+    if result:
+        import bisect
+        syms = sorted({d["symbol"] for d in result if d.get("symbol")})
+        close_map: dict[str, list] = {}
+        if syms:
+            with db_cursor(config) as cur:
+                for sym in syms:
+                    cur.execute(
+                        "SELECT trade_date, close FROM market_data.daily_kline WHERE symbol = %s ORDER BY trade_date",
+                        (sym,),
+                    )
+                    close_map[sym] = cur.fetchall()
+        for d in result:
+            rows_c = close_map.get(d.get("symbol"))
+            based = d.get("based_date")
+            base_close = d.get("close")
+            if not rows_c or not based or not base_close:
+                continue
+            dates = [r[0].strftime("%Y-%m-%d") for r in rows_c]
+            ridx = bisect.bisect_right(dates, based)
+            ridx5 = ridx + 4  # ridx 为次日，+4 为第5个交易日
+            if ridx5 < len(rows_c):
+                c5 = rows_c[ridx5][1]
+                if c5 is not None and base_close:
+                    d["ret5"] = round(float(c5) / float(base_close) - 1, 6)
+                    d["ret5_date"] = dates[ridx5]
     return result
 
 

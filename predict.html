@@ -189,6 +189,7 @@
     <h1>买卖点预测</h1>
     <a class="back" href="index.html">← 返回入口</a>
   </div>
+  <div class="subtitle">基于一段时间的历史数据，用12因子评分预测<b>下一个交易日</b>的操作建议与走势形态；点「保存当前预测结论」落库后，<b>次日自动复盘验证</b>命中情况</div>
 
   <!-- 股票与数据范围 -->
   <div class="panel">
@@ -284,7 +285,7 @@
       <button id="savePredBtn" onclick="savePrediction()" disabled>保存当前预测结论</button>
       <span id="saveStatus" class="hint">先运行预测，再保存结论落库；次日打开本页自动复盘</span>
     </div>
-    <div class="hint" style="margin-top:6px;">同一股票同一依据日重复保存会覆盖更新。命中判定：买入类信号次日上涨=命中，卖出类信号次日下跌=命中，观望只记录涨跌不计命中；走势命中：次日实际走势形态与预测形态一致=命中。</div>
+    <div class="hint" style="margin-top:6px;">流程：运行预测 → 保存结论落库 → <b>次日打开本页自动复盘</b>（以实际收盘验证）。命中判定：买入类信号次日上涨=命中，卖出类信号次日下跌=命中，观望只记录涨跌不计命中；走势命中：次日实际走势形态与预测形态一致=命中。同一股票同一依据日重复保存会覆盖更新。</div>
     <div id="predStats"></div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:8px;">
       <h3 style="font-size:14px; color:#444;">预测记录</h3>
@@ -538,7 +539,8 @@ function showFactorModal(key) {
   mask.style.display = 'flex';
 }
 
-// 概率与结论 opVerdict / 支撑压力 calcLevels / 时机建议 timingAdvice / 历史信号 computeSignals+signalStats 已抽至 predict-engine.js
+// 概率与结论 opVerdict / 支撑压力 calcLevels / 时机建议 timingAdvice 已抽至 predict-engine.js
+// （历史信号命中统计 computeSignals+signalStats 已移至「买卖点回测」页）
 
 // ============ 明日走势形态预测（9种形态概率推断） ============
 // 9 种形态按 偏多→中性→偏空 排列，与后端 classify_trend 判定规则一致
@@ -825,10 +827,6 @@ function runPrediction(rows, info) {
       </div>`;
   }
 
-  // 历史信号（双向独立判定；接入大盘波动率过滤：波动率不适中的买入信号剔除）
-  const signals = computeSignalsDual(rows, wBuy, wSell, info, undefined, undefined, { marketStates: _marketStates });
-  const stats = signalStats(rows, signals);
-
   // 明日走势形态预测 + 操作策略
   const trend = predictTrendScores(rows, i);
   const adv = buildStrategyAdvice(rows, i, L);
@@ -865,32 +863,6 @@ function runPrediction(rows, info) {
     <div class="factor-group-title" title="${esc(g.desc)}">${esc(g.name)}</div>
     ${g.items.map(factorRowHtml).join('')}
   `).join('') + restParts.map(factorRowHtml).join('');
-
-  // 历史信号表格（最近12条）
-  const recentSignals = signals.slice(-12).reverse();
-  let sigHtml = '';
-  if (recentSignals.length) {
-    sigHtml = recentSignals.map(sg => {
-      const retTxt = sg.ret5 === undefined ? '-' : ((sg.ret5 >= 0 ? '+' : '') + (sg.ret5 * 100).toFixed(2) + '%');
-      const retCls = sg.ret5 === undefined ? '' : (sg.ret5 > 0 ? 'up' : 'down');
-      return `<tr>
-        <td>${rows[sg.t].date}</td>
-        <td><span class="tag ${sg.type}">${sg.type === 'buy' ? '买入' : '卖出'}</span></td>
-        <td class="${sg.S >= 0 ? 'up' : 'down'}">${sg.S >= 0 ? '+' : ''}${sg.S.toFixed(0)}</td>
-        <td>${fmtNum(rows[sg.t].close)}</td>
-        <td class="${retCls}">${retTxt}</td>
-      </tr>`;
-    }).join('');
-  } else {
-    sigHtml = '<tr><td colspan="5" style="color:#999; text-align:center;">所选区间内未产生信号（可扩大数据范围）</td></tr>';
-  }
-  const baseline = baselineStats(rows, 5); // 该股全历史随机入场基线（后5日收益率口径）
-  const buyRate = stats.buyCnt ? (stats.buyWin / stats.buyCnt * 100).toFixed(1) : '-';
-  const sellRate = stats.sellCnt ? (stats.sellWin / stats.sellCnt * 100).toFixed(1) : '-';
-  const buyTouchRate = stats.buyCnt ? (stats.buyTouch / stats.buyCnt * 100).toFixed(0) : '-';
-  const sellTouchRate = stats.sellCnt ? (stats.sellTouch / stats.sellCnt * 100).toFixed(0) : '-';
-  const buyExcess = (buyRate !== '-' && baseline.hitUp != null) ? (parseFloat(buyRate) - baseline.hitUp) : null;
-  const sellExcess = (sellRate !== '-' && baseline.hitUp != null) ? (parseFloat(sellRate) - (100 - baseline.hitUp)) : null;
 
   // 一句话结论摘要（通俗版）：综合买卖双向评分给用户最直接的"下个交易日操作建议"
   const mom = window.__factorParts ? (window.__factorParts.find(p => p.key === 'mom5') || {}).score : null;
@@ -941,7 +913,7 @@ function runPrediction(rows, info) {
             <div class="bar"><div class="down" style="width:${P_down}%"></div></div>
             <span class="value down">${P_down}%</span>
           </div>
-          <div class="score-summary">操作建议由 12 因子买入/卖出双权重评分综合判定（基本面因子已停用）：加仓/持有偏多、减仓/卖出偏空、观望为方向不明。信号评价以<b>后5日收益率</b>为权威口径（下方展示命中率与随机入场基线对比），盘中触及±2%仅作短线辅助参考</div>
+          <div class="score-summary">操作建议由 12 因子买入/卖出双权重评分综合判定（基本面因子已停用）：加仓/持有偏多、减仓/卖出偏空、观望为方向不明。保存预测后<b>次日自动用实际收盘复盘验证</b>（买入类次日上涨=命中、卖出类次日下跌=命中）；历史信号命中率统计请在「买卖点回测」页查看</div>
         </div>
       </div>
 
@@ -1010,37 +982,19 @@ function runPrediction(rows, info) {
     </div>
 
     <div class="panel">
-      <h2>K线与买卖信号（${rows.length}个交易日）</h2>
-      <div class="stats">
-        <div class="stat-item"><span class="k">买入信号·后5日收盘上涨（主口径）</span>：<strong class="up">${buyRate}%</strong>（${stats.buyCnt}次，随机入场基线 ${baseline.hitUp != null ? baseline.hitUp.toFixed(1) + '%' : '-'}${buyExcess != null ? (buyExcess >= 0 ? '，超额+' : '，超额') + buyExcess.toFixed(1) + 'pt' : ''}）</div>
-        <div class="stat-item"><span class="k">买入信号·后5日均收益</span>：<strong class="${(stats.buy.avg != null && stats.buy.avg > 0) ? 'up' : 'down'}">${stats.buy.avg != null ? (stats.buy.avg >= 0 ? '+' : '') + stats.buy.avg.toFixed(2) + '%' : '-'}</strong>（基线 ${baseline.avgRet != null ? (baseline.avgRet >= 0 ? '+' : '') + baseline.avgRet.toFixed(2) + '%' : '-'}）</div>
-        <div class="stat-item"><span class="k">卖出信号·后5日收盘下跌（主口径）</span>：<strong class="down">${sellRate}%</strong>（${stats.sellCnt}次${sellExcess != null ? (sellExcess >= 0 ? '，超额+' : '，超额') + sellExcess.toFixed(1) + 'pt' : ''}）</div>
-        <div class="stat-item"><span class="k">卖出信号·后5日均收益</span>：<strong class="${(stats.sell.avg != null && stats.sell.avg < 0) ? 'down' : 'up'}">${stats.sell.avg != null ? (stats.sell.avg >= 0 ? '+' : '') + stats.sell.avg.toFixed(2) + '%' : '-'}</strong>（负=卖出后下跌，信号有效）</div>
-        <div class="stat-item" style="color:#888"><span class="k">辅助参考·5日盘中触及+2%（买）</span>：<strong>${buyTouchRate}%</strong>（${stats.buyCnt}次）</div>
-        <div class="stat-item" style="color:#888"><span class="k">辅助参考·5日盘中触及-2%（卖）</span>：<strong>${sellTouchRate}%</strong>（${stats.sellCnt}次）</div>
-      </div>
+      <h2>最近K线走势（预测日: ${window.__predictDate}）</h2>
       <div class="chart-wrap">
         <div class="legend">
           <div class="legend-item"><span class="legend-color" style="background:#e8453c"></span>上涨</div>
           <div class="legend-item"><span class="legend-color" style="background:#34a853"></span>下跌</div>
           <div class="legend-item"><span class="legend-color" style="background:#ff9800"></span>预测</div>
-          <div class="legend-item"><span style="color:#e8453c">▲ 历史买入信号</span></div>
-          <div class="legend-item"><span style="color:#34a853">▼ 历史卖出信号</span></div>
         </div>
         <div class="chart-canvas-wrap"><canvas id="klineChart"></canvas></div>
       </div>
     </div>
-
-    <div class="panel">
-      <h2>历史信号明细（最近12条，5日表现）</h2>
-      <table>
-        <thead><tr><th>日期</th><th>信号</th><th>评分</th><th>当日收盘</th><th>5日后涨跌</th></tr></thead>
-        <tbody>${sigHtml}</tbody>
-      </table>
-    </div>
   `;
 
-  drawSignalChart(rows, signals, Sbuy, op);
+  drawKlineChart(rows, Sbuy, op);
 }
 
 // ============ 预测落库与复盘 ============
@@ -1165,6 +1119,9 @@ function renderPredTable(rows) {
     const pct = p.actual_pct == null ? null : Number(p.actual_pct);
     const pctTxt = pct == null ? '-' : ((pct >= 0 ? '+' : '') + pct.toFixed(2) + '%');
     const pctCls = pct == null ? '' : (pct > 0 ? 'up' : 'down');
+    const r5 = p.ret5 == null ? null : Number(p.ret5);
+    const r5Txt = r5 == null ? '-' : ((r5 >= 0 ? '+' : '') + (r5 * 100).toFixed(2) + '%');
+    const r5Cls = r5 == null ? '' : (r5 > 0 ? 'up' : 'down');
     const score = Number(p.score);
     const trendTxt = p.trend ? (TREND_NAMES[p.trend] || p.trend) : '-';
     const actualTrendTxt = p.actual_trend ? (TREND_NAMES[p.actual_trend] || p.actual_trend) : '-';
@@ -1181,6 +1138,7 @@ function renderPredTable(rows) {
       <td>${p.prob_up != null ? fmtNum(p.prob_up) + '%' : '-'}</td>
       <td>${p.actual_close != null ? fmtNum(p.actual_close) : '-'}</td>
       <td class="${pctCls}">${pctTxt}</td>
+      <td class="${r5Cls}" title="${p.ret5_date ? '截至 ' + p.ret5_date : ''}">${r5Txt}</td>
       <td>${actualTrendTxt}</td>
       <td>${trendHitTxt}</td>
       <td>${hitTxt}</td>
@@ -1190,7 +1148,7 @@ function renderPredTable(rows) {
   wrap.innerHTML = `<table>
     <thead><tr>
       <th>依据日</th><th>股票</th><th>目标日</th><th>预测走势</th><th>结论</th><th>评分</th><th>上涨概率</th>
-      <th>复盘收盘</th><th>实际涨跌</th><th>实际走势</th><th>走势验证</th><th>方向</th><th>复盘日</th>
+      <th>复盘收盘</th><th>次日涨跌</th><th>5日后涨跌</th><th>实际走势</th><th>走势验证</th><th>方向</th><th>复盘日</th>
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
@@ -1241,9 +1199,9 @@ async function loadPredStats() {
   }
 }
 
-// ============ K线图（原生Canvas，带买卖信号标记） ============
+// ============ K线图（原生Canvas，展示近期走势 + 预测标记） ============
 let _klineChart = null;
-function drawSignalChart(rows, signals, S, verdict) {
+function drawKlineChart(rows, S, verdict) {
   const canvas = document.getElementById('klineChart');
   if (!canvas) return;
   if (_klineChart) {
@@ -1261,15 +1219,9 @@ function drawSignalChart(rows, signals, S, verdict) {
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  // 随数据范围绘制全部K线（不再固定最近120根）
+  // 随数据范围绘制全部K线
   const data = rows;
   const labels = data.map(r => r.date);
-
-  // 窗口内的信号（idx 为在 data 中的下标）
-  const offset = 0;
-  const markers = signals
-    .filter(sg => sg.t >= offset)
-    .map(sg => ({ x: sg.t - offset, type: sg.type, S: sg.S }));
 
   const W = cssW, H = cssH;
   const padL = 44, padR = 44, padT = 10, padB = 24;
@@ -1321,26 +1273,6 @@ function drawSignalChart(rows, signals, S, verdict) {
       const bw = (i === hoverIdx) ? bodyW * 1.15 : bodyW;
       ctx.fillRect(x - bw / 2, bodyTop, bw, bodyH);
       ctx.strokeRect(x - bw / 2, bodyTop, bw, bodyH);
-    });
-    // 信号标记
-    markers.forEach(m => {
-      const x = xOf(m.x);
-      const k = data[m.x];
-      if (m.type === 'buy') {
-        ctx.fillStyle = '#e8453c';
-        ctx.beginPath();
-        ctx.moveTo(x, yOf(k.low) + 12);
-        ctx.lineTo(x - 7, yOf(k.low) + 22);
-        ctx.lineTo(x + 7, yOf(k.low) + 22);
-        ctx.closePath(); ctx.fill();
-      } else {
-        ctx.fillStyle = '#34a853';
-        ctx.beginPath();
-        ctx.moveTo(x, yOf(k.high) - 12);
-        ctx.lineTo(x - 7, yOf(k.high) - 22);
-        ctx.lineTo(x + 7, yOf(k.high) - 22);
-        ctx.closePath(); ctx.fill();
-      }
     });
     // 预测标记（下一交易日，画在最右侧）
     const px = padL + chartW + 6;
