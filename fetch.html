@@ -100,6 +100,19 @@
   .pagination button:hover { background: #1557b0; }
   .pagination button:disabled { background: #ccc; cursor: not-allowed; }
   .page-info { font-size: 12px; color: #666; font-family: Consolas, monospace; }
+
+  /* 批量补齐监控 */
+  .bf-progress-wrap { background: #eef2f7; border-radius: 6px; height: 14px; overflow: hidden; margin: 8px 0 4px; }
+  .bf-progress-bar { height: 100%; background: linear-gradient(90deg, #1a73e8, #4c9dff); border-radius: 6px; transition: width 0.6s; }
+  .bf-stats { display: flex; gap: 24px; flex-wrap: wrap; margin: 8px 0; font-size: 13px; }
+  .bf-stats b { font-family: Consolas, monospace; font-size: 16px; color: #1a73e8; }
+  .bf-eta { font-size: 12px; color: #666; margin-bottom: 8px; }
+  .bf-fail-wrap { margin-top: 10px; }
+  .bf-fail-title { font-size: 13px; font-weight: 600; color: #d93025; margin-bottom: 6px; }
+  .bf-fail-list { list-style: none; margin: 0; padding: 0; }
+  .bf-fail-list li { font-size: 12px; color: #333; background: #fdf3f2; border: 1px solid #f5c6c0; border-radius: 4px; padding: 4px 10px; margin-bottom: 4px; font-family: Consolas, monospace; }
+  .bf-none { font-size: 12px; color: #34a853; margin-top: 6px; }
+  .bf-last { font-size: 12px; color: #999; margin-top: 6px; font-family: Consolas, monospace; }
 </style>
 </head>
 <body>
@@ -223,6 +236,16 @@
       <button class="secondary" id="probeFixBtn" onclick="runProbeFix()">一键补全缺失字段</button>
     </div>
     <div id="probeResult"></div>
+  </div>
+
+  <!-- 批量补齐监控 -->
+  <div class="panel" id="backfillPanel">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <h2 style="margin:0; border:none; padding:0;">批量补齐进度监控</h2>
+      <button class="secondary" id="backfillRefreshBtn" onclick="loadBackfillStatus()">立即刷新</button>
+    </div>
+    <div id="backfillStatus"></div>
+    <div class="hint">监控后台批量补齐任务（_backfill_kline_batch.py），每 5 秒自动刷新；失败股票自动重试 3 次，仍失败记录到 _backfill_failed.json。</div>
   </div>
 
   <!-- 拉取结果 -->
@@ -852,6 +875,68 @@ async function previewPage(delta) {
     nextBtn.disabled = currentPage >= (lastFetch.totalPages || 1);
   }
 }
+
+// ============ 批量补齐监控 ============
+let backfillTimer = null;
+
+function fmtEta(sec) {
+  if (!sec || sec <= 0) return '计算中...';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}小时${m}分` : `${m}分${Math.floor(sec % 60)}秒`;
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadBackfillStatus() {
+  const el = document.getElementById('backfillStatus');
+  try {
+    const res = await fetch(`${API_BASE}/api/backfill/status`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const goal = data.goal || 1;
+    const pct = Math.min(100, (data.done / goal) * 100);
+    const status = data.running ? '<span style="color:#1a73e8;">● 任务运行中</span>'
+      : '<span style="color:#999;">○ 任务未运行</span>';
+    let html = `<div style="font-size:13px; color:#666;">${status} ｜ 启动于 ${esc(data.started || '-')}</div>
+      <div class="bf-progress-wrap"><div class="bf-progress-bar" style="width:${pct.toFixed(1)}%"></div></div>
+      <div style="font-size:12px; color:#999; text-align:right;">${pct.toFixed(1)}%</div>
+      <div class="bf-stats">
+        <span>已完成 <b>${data.done}</b> / ${goal}</span>
+        <span>剩余 <b>${data.remaining}</b> 只</span>
+        <span>速率 <b>${data.sec_per ? data.sec_per + 's/只' : '-'}</b></span>
+        <span>预计剩余 <b>${fmtEta(data.eta_seconds)}</b></span>
+        <span>成功 <b style="color:#34a853;">${data.ok}</b></span>
+        <span>失败 <b style="color:#d93025;">${data.failed}</b></span>
+      </div>`;
+    const fails = data.failed_list || [];
+    if (fails.length) {
+      html += `<div class="bf-fail-wrap"><div class="bf-fail-title">失败股票清单（${fails.length} 只）</div><ul class="bf-fail-list">`;
+      fails.slice(0, 10).forEach(f => {
+        html += `<li>${esc(f.symbol)} ${esc(f.name || '')} | ${esc((f.msg || '').slice(0, 50))} | ${esc((f.time || '').slice(5, 19))}</li>`;
+      });
+      if (fails.length > 10) html += `<li>... 其余 ${fails.length - 10} 只见 _backfill_failed.json</li>`;
+      html += '</ul></div>';
+    } else {
+      html += '<div class="bf-none">失败清单：无 ✓</div>';
+    }
+    if (data.retry_lines && data.retry_lines.length) {
+      html += `<div class="bf-last">最近重试: ${esc(data.retry_lines[data.retry_lines.length - 1])}</div>`;
+    }
+    if (data.last_result) {
+      html += `<div class="bf-last">最近完成: ${esc(data.last_result)}</div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="hint" style="color:#d93025;">加载补齐状态失败: ${esc(e.message)}</div>`;
+  }
+}
+
+// 初始化：立即加载一次 + 每 5 秒自动刷新
+loadBackfillStatus();
+backfillTimer = setInterval(loadBackfillStatus, 5000);
 
 // ============ 初始化 ============
 // 默认起止日期：起始=2年前，结束=今天（与「最近2年」对齐）

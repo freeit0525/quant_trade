@@ -156,6 +156,8 @@ class QuantHandler(SimpleHTTPRequestHandler):
                 self.api_predictions(params)
             elif parsed.path == "/api/predictions/stats":
                 self.api_predictions_stats(params)
+            elif parsed.path == "/api/backfill/status":
+                self.api_backfill_status(params)
             else:
                 self._send_json({"error": "未知接口"}, 404)
         except Exception as e:
@@ -1086,6 +1088,116 @@ class QuantHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": f"探针执行失败: {e}"}, 500)
             return
         self._send_json(report, 200)
+
+    def api_backfill_status(self, params: dict):
+        """补齐任务监控状态（读取补齐脚本落盘文件，实时返回进度/失败清单）
+
+        读取 _backfill_progress.json（进度）、_backfill_failed.json（失败清单）、
+        _backfill_kline.log（OK/FAIL/重试行），统计 OK 行时间戳估算速率。
+        返回: {running, goal, done, ok, failed, skipped, started,
+              sec_per, eta_seconds, failed_list:[{symbol,name,msg,time}], last_result, retry_lines}
+        """
+        import re as _re
+        from datetime import datetime as _dt
+
+        ROOT_DIR = ROOT
+        prog_file = ROOT_DIR / "_backfill_progress.json"
+        fail_file = ROOT_DIR / "_backfill_failed.json"
+        log_file = ROOT_DIR / "_backfill_kline.log"
+
+        def _load_json(path, default):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f) or default
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return default
+
+        progress = _load_json(prog_file, {})
+        failed = _load_json(fail_file, [])
+
+        # 库中已有 K 线股票数（权威实时）
+        try:
+            from database.db import db_cursor
+
+            with db_cursor() as cur:
+                cur.execute("SELECT COUNT(DISTINCT symbol) FROM market_data.daily_kline")
+                done = cur.fetchone()[0]
+        except Exception:
+            done = progress.get("ok", 0)
+        try:
+            from database.db import db_cursor
+
+            with db_cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM market_data.stock_info")
+                goal = cur.fetchone()[0]
+        except Exception:
+            goal = progress.get("total", 0) + done
+
+        # 日志统计：OK/FAIL 行数、时间戳、最近结果、重试行
+        log_ok = log_fail = 0
+        last_result = ""
+        retry_lines = []
+        stamps = []
+        now = _dt.now()
+        today = now.date()
+        ok_re = _re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*OK\s+")
+        fail_re = _re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*FAIL\s+")
+        retry_re = _re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*重试\s+(\S+)")
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                for ln in f:
+                    ln = ln.rstrip("\n")
+                    m = ok_re.match(ln)
+                    if m:
+                        log_ok += 1
+                        last_result = ln
+                        try:
+                            t = _dt.strptime(m.group(1), "%H:%M:%S").replace(
+                                year=today.year, month=today.month, day=today.day
+                            )
+                            if t > now:
+                                t = t.replace(year=today.year - 1)
+                            stamps.append(t.timestamp())
+                        except ValueError:
+                            pass
+                        continue
+                    m = fail_re.match(ln)
+                    if m:
+                        log_fail += 1
+                        last_result = ln
+                        continue
+                    if retry_re.match(ln):
+                        retry_lines.append(ln)
+        except FileNotFoundError:
+            pass
+
+        # 速率：最近 20 条 OK 的平均间隔（秒/只）
+        sec_per = 0.0
+        if len(stamps) >= 2:
+            win = stamps[-20:]
+            sec_per = (win[-1] - win[0]) / (len(win) - 1) if len(win) > 1 else 0.0
+        remaining = max(goal - done, 0)
+        eta_seconds = remaining * sec_per if sec_per > 0 and remaining > 0 else 0
+        # 活跃判定：最后一条 OK/FAIL 距今 < 10 分钟 或 进度文件 failed>0 待处理
+        running = bool(retry_lines) or (log_ok + log_fail) > 0 and _dt.now().timestamp() - (stamps[-1] if stamps else 0) < 600
+
+        self._send_json({
+            "running": bool(running),
+            "goal": goal,
+            "done": done,
+            "remaining": remaining,
+            "ok": progress.get("ok", 0),
+            "failed": progress.get("failed", 0),
+            "skipped": progress.get("skipped", 0),
+            "started": progress.get("started", ""),
+            "log_ok": log_ok,
+            "log_fail": log_fail,
+            "sec_per": round(sec_per, 1) if sec_per else 0,
+            "eta_seconds": int(eta_seconds),
+            "last_result": last_result,
+            "retry_lines": retry_lines[-5:],
+            "failed_list": failed,
+        }, 200)
 
     def api_refresh_today_all(self, source: str):
         """批量刷新库中所有股票的当天数据（/api/refresh_today 未传 code 时调用）"""

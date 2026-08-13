@@ -270,8 +270,9 @@ def probe_tdx() -> tuple[bool, str]:
 class DataFetcher:
     """A股数据获取器，支持akshare数据源和本地CSV缓存"""
 
-    def __init__(self, config: DataSourceConfig | None = None) -> None:
+    def __init__(self, config: DataSourceConfig | None = None, merge_fund_flow: bool = True) -> None:
         self.config = config or DataSourceConfig()
+        self.merge_fund_flow = merge_fund_flow
         self._cache_dir = Path(self.config.cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -478,8 +479,9 @@ class DataFetcher:
             df = self._calc_macd(df, symbol)
             # 计算 MA/RSI/KDJ（拼接库中全量 OHLC 重算，保证增量精确）
             df = self._calc_tech_indicators(df, symbol)
-            # 合并资金流向（近100天可获取，更早为 NULL）
-            df = self._merge_fund_flow(df, symbol)
+            # 合并资金流向（近100天可获取，更早为 NULL）；可配置跳过（如批量补K线时不触发资金流接口）
+            if self.merge_fund_flow:
+                df = self._merge_fund_flow(df, symbol)
             # 腾讯源无换手率，回退其数据时用证券宝按日期补全 turnover
             df = self._fill_turnover_from_baostock(df, symbol)
             # baostock 历史 turn 也缺失时，用库内附近真实换手率反推股本估算
@@ -745,7 +747,8 @@ class DataFetcher:
         df = self._calc_volume_ratio(df, symbol, beg_ts)
         df = self._calc_macd(df, symbol)
         df = self._calc_tech_indicators(df, symbol)
-        df = self._merge_fund_flow(df, symbol)
+        if self.merge_fund_flow:
+            df = self._merge_fund_flow(df, symbol)
         # 仅腾讯源无换手率；baostock 补当天，补不上则保持 NULL（upsert 保留库内旧值）
         df = self._fill_turnover_from_baostock(df, symbol)
 
@@ -785,6 +788,8 @@ class DataFetcher:
 
     def _infer_market_code(self, symbol: str) -> str:
         """根据股票代码推断交易所代码（sh/sz/bj），用于资金流向接口"""
+        if symbol.startswith("920") or symbol.startswith("8") or symbol.startswith("4"):
+            return "bj"
         if symbol.startswith("6") or symbol.startswith("9"):
             return "sh"
         if symbol.startswith("0") or symbol.startswith("3"):
