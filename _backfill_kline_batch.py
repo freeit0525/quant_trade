@@ -7,11 +7,16 @@
 - 小批慢速：每批 batch_size 只，批间暂停 pause 秒；每只请求后 sleep 秒，避免触发接口风控。
 - 失败不中断：单只失败记录到失败清单，继续下一只；失败股票下次运行自动重试。
 - 进度落盘：_backfill_kline.log 记录每只结果，_backfill_progress.json 记录进度。
+- 看门狗（--watchdog-sec）：baostock/远程库偶发挂起（曾单只拉取卡 80 分钟），
+  超时后强制退出进程（code=86），配合 _backfill_kline_supervisor.py 自动重启续跑，
+  避免整夜零进度。每次重启进程状态全新（数据库连接池/baostock 会话重置）。
 """
 import argparse
 import io
 import json
+import os
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -25,6 +30,35 @@ PROGRESS_FILE = "_backfill_progress.json"
 FAILED_FILE = "_backfill_failed.json"
 
 fetcher = DataFetcher(DataSourceConfig(source="baostock"), merge_fund_flow=False)
+
+# ===== 看门狗：单只拉取超时强制退出（供 supervisor 识别重启）=====
+WATCHDOG_EXIT = 86
+_watchdog_deadline: float | None = None
+_watchdog_lock = threading.Lock()
+
+
+def arm_watchdog(timeout_sec: float):
+    """为当前拉取设置超时截止时间"""
+    global _watchdog_deadline
+    with _watchdog_lock:
+        _watchdog_deadline = time.time() + timeout_sec
+
+
+def disarm_watchdog():
+    global _watchdog_deadline
+    with _watchdog_lock:
+        _watchdog_deadline = None
+
+
+def _watchdog_loop(timeout_sec: float):
+    """后台巡检：超过截止时间仍未完成 → 强制退出进程，防止整夜卡死"""
+    while True:
+        with _watchdog_lock:
+            dl = _watchdog_deadline
+        if dl is not None and time.time() > dl:
+            log(f"看门狗触发：单只拉取超过 {timeout_sec:.0f}s，进程强制退出（code={WATCHDOG_EXIT}）")
+            os._exit(WATCHDOG_EXIT)
+        time.sleep(5)
 
 
 def log(msg: str):
@@ -75,7 +109,7 @@ def get_missing_symbols() -> list[tuple]:
         return cur.fetchall()
 
 
-def backfill_one(symbol: str, name: str, retries: int = 3, retry_delay: float = 5.0) -> tuple[bool, str]:
+def backfill_one(symbol: str, name: str, retries: int = 3, retry_delay: float = 5.0, watchdog_sec: float = 0.0) -> tuple[bool, str]:
     """拉取单只全历史 K 线入库。失败自动重试 retries 次（指数退避）。
 
     返回 (成功?, 说明)。重试基于幂等：每次调用内部都走增量逻辑，
@@ -88,7 +122,11 @@ def backfill_one(symbol: str, name: str, retries: int = 3, retry_delay: float = 
             log(f"    重试 {symbol} {name} 第 {attempt}/{retries} 次（等待 {wait:.0f}s）")
             time.sleep(wait)
         try:
-            df = fetcher.fetch_stock(symbol, "19900101", "20991231", use_db=True)
+            arm_watchdog(watchdog_sec)
+            try:
+                df = fetcher.fetch_stock(symbol, "19900101", "20991231", use_db=True)
+            finally:
+                disarm_watchdog()
             n = 0 if df is None else len(df)
             if n > 0:
                 return True, f"入库 {n} 条"
@@ -107,7 +145,13 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="本次最多处理股票数（调试用，0=不限）")
     ap.add_argument("--retries", type=int, default=3, help="单只失败自动重试次数（默认3，指数退避）")
     ap.add_argument("--retry-delay", type=float, default=5.0, help="首次重试等待秒数（默认5，之后翻倍）")
+    ap.add_argument("--watchdog-sec", type=float, default=480.0,
+                    help="看门狗：单只拉取超过该秒数强制退出进程（code=86，默认480=8分钟；0=关闭）")
     args = ap.parse_args()
+
+    if args.watchdog_sec > 0:
+        threading.Thread(target=_watchdog_loop, args=(args.watchdog_sec,), daemon=True).start()
+        log(f"看门狗已启动（单只拉取超过 {args.watchdog_sec:.0f}s 强制退出，code={WATCHDOG_EXIT}）")
 
     log("=" * 60)
     log(f"开始分批补齐（batch={args.batch_size}, pause={args.pause}s, sleep={args.sleep}s, max_batches={args.max_batches}, retries={args.retries}）")
@@ -137,7 +181,7 @@ def main():
                 save_progress(progress)
                 save_failed(failed_prev)
                 return
-            ok, msg = backfill_one(sym, name, retries=args.retries, retry_delay=args.retry_delay)
+            ok, msg = backfill_one(sym, name, retries=args.retries, retry_delay=args.retry_delay, watchdog_sec=args.watchdog_sec)
             n_done += 1
             progress["done"] = n_done
             if ok:

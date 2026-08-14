@@ -5,11 +5,15 @@
 库中现有资金流可能混有新浪数据。本脚本用东财数据覆盖近120日，
 保证库中近期资金流为东财口径。东财接口被风控时会快速失败跳过，
 可等风控缓解后重跑（断点续传：已成功股票记入进度文件，跳过）。
+- 看门狗（--watchdog-sec）：东财请求/远程库偶发挂起，单只超时后强制退出进程
+  （code=86），配合 _backfill_fund_flow_supervisor.py 自动重启续跑，避免整夜零进度。
 """
 import argparse
 import io
 import json
+import os
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -25,6 +29,35 @@ FLOW_COLS = ["main_net_inflow", "super_large_net_inflow",
              "large_net_inflow", "medium_net_inflow", "small_net_inflow"]
 
 fetcher = DataFetcher()  # 默认源，资金流直接调东财专用函数
+
+# ===== 看门狗：单只拉取超时强制退出（供 supervisor 识别重启）=====
+WATCHDOG_EXIT = 86
+_watchdog_deadline: float | None = None
+_watchdog_lock = threading.Lock()
+
+
+def arm_watchdog(timeout_sec: float):
+    """为当前拉取设置超时截止时间"""
+    global _watchdog_deadline
+    with _watchdog_lock:
+        _watchdog_deadline = time.time() + timeout_sec
+
+
+def disarm_watchdog():
+    global _watchdog_deadline
+    with _watchdog_lock:
+        _watchdog_deadline = None
+
+
+def _watchdog_loop(timeout_sec: float):
+    """后台巡检：超过截止时间仍未完成 → 强制退出进程，防止整夜卡死"""
+    while True:
+        with _watchdog_lock:
+            dl = _watchdog_deadline
+        if dl is not None and time.time() > dl:
+            log(f"看门狗触发：单只拉取超过 {timeout_sec:.0f}s，进程强制退出（code={WATCHDOG_EXIT}）")
+            os._exit(WATCHDOG_EXIT)
+        time.sleep(5)
 
 
 def log(msg: str):
@@ -74,7 +107,7 @@ def overwrite_fund_flow(symbol: str, df) -> int:
     return updated
 
 
-def backfill_one(symbol: str, retries: int = 2, retry_delay: float = 5.0) -> tuple[bool, str]:
+def backfill_one(symbol: str, retries: int = 2, retry_delay: float = 5.0, watchdog_sec: float = 0.0) -> tuple[bool, str]:
     last_err = ""
     for attempt in range(retries + 1):
         if attempt > 0:
@@ -82,11 +115,15 @@ def backfill_one(symbol: str, retries: int = 2, retry_delay: float = 5.0) -> tup
             log(f"    重试 {symbol} 第 {attempt}/{retries} 次（等待 {wait:.0f}s）")
             time.sleep(wait)
         try:
-            ff = fetcher._fetch_fund_flow_via_eastmoney(symbol)
-            if ff is None or ff.empty:
-                last_err = "东财返回空（可能被风控或无数据）"
-                continue
-            n = overwrite_fund_flow(symbol, ff)
+            arm_watchdog(watchdog_sec)
+            try:
+                ff = fetcher._fetch_fund_flow_via_eastmoney(symbol)
+                if ff is None or ff.empty:
+                    last_err = "东财返回空（可能被风控或无数据）"
+                    continue
+                n = overwrite_fund_flow(symbol, ff)
+            finally:
+                disarm_watchdog()
             if n > 0:
                 return True, f"覆盖 {n} 行 ({ff['date'].min().date()} ~ {ff['date'].max().date()})"
             last_err = "覆盖 0 行（K线库中无对应日期）"
@@ -113,7 +150,13 @@ def main():
     ap.add_argument("--force", action="store_true", help="忽略进度，全量重新覆盖")
     ap.add_argument("--wait-recovery", type=int, default=0,
                     help="东财被风控时自动等待恢复（分钟；0=不等待直接开始，默认0）")
+    ap.add_argument("--watchdog-sec", type=float, default=480.0,
+                    help="看门狗：单只拉取超过该秒数强制退出进程（code=86，默认480=8分钟；0=关闭）")
     args = ap.parse_args()
+
+    if args.watchdog_sec > 0:
+        threading.Thread(target=_watchdog_loop, args=(args.watchdog_sec,), daemon=True).start()
+        log(f"看门狗已启动（单只拉取超过 {args.watchdog_sec:.0f}s 强制退出，code={WATCHDOG_EXIT}）")
 
     log("=" * 60)
     log(f"开始东财资金流补齐（sleep={args.sleep}s, retries={args.retries}, force={args.force}）")
@@ -147,7 +190,7 @@ def main():
         if args.limit and progress["done"] - (len(symbols) - len(todo)) >= args.limit:
             log(f"达到 --limit {args.limit}，停止")
             break
-        ok, msg = backfill_one(sym, retries=args.retries, retry_delay=args.retry_delay)
+        ok, msg = backfill_one(sym, retries=args.retries, retry_delay=args.retry_delay, watchdog_sec=args.watchdog_sec)
         progress["done"] += 1
         if ok:
             progress["ok"] += 1

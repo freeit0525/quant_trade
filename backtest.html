@@ -556,6 +556,12 @@
         </div>
         <div class="field" style="flex:0 0 auto; min-width:auto">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="boostUseBullBuy" checked style="width:auto">
+            多头补买（金叉环境错过金叉后量能确认即买）
+          </label>
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
             <input type="checkbox" id="boostUseKdj" style="width:auto">
             辅助: KDJ低位金叉(K&lt;50)
           </label>
@@ -573,6 +579,11 @@
           </label>
         </div>
       </div>
+      <div class="row" style="margin-top:10px; align-items:center;">
+        <button class="secondary" onclick="diagnoseMacdBoost()">查看当前状态与次日建议</button>
+        <span class="hint" style="margin-left:10px;">基于已加载数据的最新交易日，判断 MACD 环境 + 量能因子命中，给出下个交易日买卖/持有建议</span>
+      </div>
+      <div id="boostDiag"></div>
     </div>
 
     <div class="sub-section">
@@ -697,6 +708,41 @@
             <input type="checkbox" id="enableBullBuy" checked style="width:auto">
             多头空仓补买（金叉状态未持仓时也买入，弥补错过金叉信号）
           </label>
+        </div>
+      </div>
+      <div class="row params" style="margin-top:4px;padding-left:22px;border-left:2px solid #e8f0fe">
+        <div class="sub-title" style="width:100%">多头补买综合规则（错过金叉后判断买/卖/持有）</div>
+        <div class="field" style="flex:0 0 auto; min-width:110px">
+          <label style="white-space:nowrap">金叉后N日内补买</label>
+          <input type="number" id="bullFreshDays" value="5" min="0" max="60">
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="bullStartBuy" checked style="width:auto">区间起点补买
+          </label>
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="bullPullback" checked style="width:auto">回调结束补买
+          </label>
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="bullSkipExtended" checked style="width:auto">追高跳过
+          </label>
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:100px">
+          <label style="white-space:nowrap">连涨N日不追</label>
+          <input type="number" id="bullSkipDays" value="5" min="1" max="60">
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:auto">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="bullSellShrink" style="width:auto">红柱缩短卖出
+          </label>
+        </div>
+        <div class="field" style="flex:0 0 auto; min-width:100px">
+          <label style="white-space:nowrap">缩短N日卖出</label>
+          <input type="number" id="bullSellShrinkDays" value="3" min="1" max="60">
         </div>
       </div>
     </div>
@@ -1302,13 +1348,54 @@ function generateSignals(strategy, macdResult, ohlc, flatFilter, fastSell, ma5Se
     }
   }
 
-  // 多头空仓补买：金叉状态(DIF>DEA)当日无信号且未被过滤器拦截时，标记补买信号，
-  // 解决错过金叉信号（如回测起点已处于多头）后整段多头期间空仓不买的问题；
-  // 引擎仅在未持仓时执行该信号，不会造成多头期间连续加仓。
-  // 仅对以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略生效，避免误作用于量能/RSI/BOLL 等策略
-  if (bullBuy && BULL_BUY_STRATEGIES.has(strategy)) {
+  // 多头空仓补买（综合规则）：错过金叉信号（如回测起点已处于多头、区间内无金叉）后，
+  // 在金叉状态(DIF>DEA)下按"综合规则"判断补买/卖出时机，弥补买点缺失：
+  //   买入：区间内首个多头日（起点补买） 或 金叉后N日内（刚金叉没上车） 或 回调结束（MACD柱速由负转正），
+  //         且未连续扩张追高（连涨≥N日不追，等回调）
+  //   卖出：红柱连续缩短N日（动能衰竭，可选开启）
+  //   持有：金叉状态且未触发卖出 → 引擎不卖出即持有
+  // 引擎仅在未持仓时执行 buyBull 建仓，不会造成多头期间连续加仓。
+  // 适用于以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略（含 rate/bar/macdBoost 柱类策略）
+  const bullBuyOn = typeof bullBuy === 'object' ? !!bullBuy.enabled : !!bullBuy;
+  if (bullBuyOn && BULL_BUY_STRATEGIES.has(strategy)) {
+    const bp = (typeof bullBuy === 'object' && bullBuy.params) || {};
+    const freshDays = Math.max(0, bp.freshDays != null ? bp.freshDays : 5);
+    const useStartBuy = bp.startBuy !== false;
+    const usePullback = bp.pullback !== false;
+    const useSkipExt = bp.skipExtended !== false;
+    const skipDays = Math.max(0, bp.skipDays != null ? bp.skipDays : 5);
+    const useSellShrink = !!bp.sellShrink;
+    const sellShrinkDays = Math.max(1, bp.sellShrinkDays != null ? bp.sellShrinkDays : 3);
+
+    // 预计算：区间内首个多头日 / 距最近金叉天数 / 柱连续扩张(递增)天数 / 柱连续缩短(递减)天数
+    const sinceCross = new Array(n).fill(Infinity);
+    const expandRun = new Array(n).fill(0);
+    const shrinkRun = new Array(n).fill(0);
+    let lastCross = -1;
+    let firstBullIdx = -1;
     for (let i = 0; i < n; i++) {
-      if (!signals[i] && !blockedBuy[i] && dif[i] > dea[i]) {
+      if (i > 0 && dif[i - 1] <= dea[i - 1] && dif[i] > dea[i]) lastCross = i;
+      if (lastCross >= 0) sinceCross[i] = i - lastCross;
+      if (firstBullIdx < 0 && dif[i] > dea[i]) firstBullIdx = i;
+      if (i > 0 && macd[i] > macd[i - 1]) expandRun[i] = expandRun[i - 1] + 1;
+      if (i > 0 && macd[i] < macd[i - 1]) shrinkRun[i] = shrinkRun[i - 1] + 1;
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (signals[i] || blockedBuy[i]) continue;   // 已有信号或被过滤器拦截 → 跳过
+      if (!(dif[i] > dea[i])) continue;            // 非金叉状态（空头）→ 跳过
+      // 卖出侧：红柱连续缩短 N 日（动能衰竭）→ 卖出提示
+      if (useSellShrink && shrinkRun[i] >= sellShrinkDays) {
+        signals[i] = 'sell';
+        sellSource[i] = 'bull';
+        continue;
+      }
+      // 买入侧：错过金叉后的补买时机判断
+      const startBuy = useStartBuy && i === firstBullIdx;        // 区间内首个多头日（区间起点已在多头 → 错过金叉起步补买）
+      const fresh = sinceCross[i] <= freshDays;                  // 金叉后 N 日内（刚金叉没上车）
+      const pullbackEnd = usePullback && i >= 2 && (macd[i - 1] - macd[i - 2]) <= 0 && (macd[i] - macd[i - 1]) > 0; // 回调结束（柱速由负转正）
+      const notExtended = !useSkipExt || expandRun[i] < skipDays; // 未连续扩张追高
+      if ((startBuy || fresh || pullbackEnd) && notExtended) {
         signals[i] = 'buyBull';
       }
     }
@@ -1701,22 +1788,16 @@ function signalPredictModel(ctx) {
 
 // 策略：MACD量能增强（macdBoost）——MACD趋势为主，量能因子确认
 // 买入候选：金叉 或 绿柱连续缩短（绿柱动能减弱）；需满足≥minFactors个增强因子（放量/量比/换手率/MA5多头+可选辅助）才买入
+// 多头补买：金叉状态(DIF>DEA)但错过金叉候选日（如回测起点已在多头），量能确认即标 buyBull（引擎仅在未持仓时执行）
 // 卖出候选：死叉 或 红柱连续缩短；恐慌（放量下跌/大阴线/RSI>70高位死叉）→sell清仓，温和→sellSoft按比例减仓做T（保留底仓待回调买回）
-function signalMacdBoost(ctx) {
-  const { dif, dea, macd, n, signals, sellSource, ohlc, vols, closes, vp, boostParams } = ctx;
-  const bp = boostParams || {};
-  const useCross = bp.useCross !== false;
-  const useBar = bp.useBar !== false;
-  const shrinkDays = Math.max(1, bp.shrinkDays || 2);
-  const minFactors = Math.max(1, bp.minFactors || 2);
+// 增强因子计算与状态诊断共用（diagnoseMacdBoost 复用）
+function buildBoostFactors(ohlc, closes, vols, vp, bp) {
+  const n = ohlc.length;
+  const volMult = (vp && vp.volMult) != null ? vp.volMult : 1.5;
+  const volRatioBuy = (vp && vp.volRatioBuy) != null ? vp.volRatioBuy : 2;
   const turnoverThr = bp.turnoverThr != null ? bp.turnoverThr : 2.5;
-  const panicPct = bp.panicPct != null ? bp.panicPct : -3;
   const useKdj = !!bp.useKdj, useRsi = !!bp.useRsi, useBias = !!bp.useBias;
   const volN = (vp && vp.volN) || 5;
-  const volMult = (vp && vp.volMult) || 1.5;
-  const volRatioBuy = (vp && vp.volRatioBuy) || 2;
-
-  // 预计算增强因子序列
   const volMA = calcMA(vols, volN);            // N日均量
   const ma5 = calcMA(closes, 5);
   const ma10 = calcMA(closes, 10);
@@ -1734,6 +1815,35 @@ function signalMacdBoost(ctx) {
   let bias6 = null;
   if (useBias) bias6 = calcBIAS(closes, 6);
 
+  // 当日增强因子命中：返回 { count, hits:[因子名] }
+  const hitFactors = (i) => {
+    let count = 0;
+    const hits = [];
+    if (volMA[i] != null && vols[i] != null && vols[i] > volMA[i] * volMult) { count++; hits.push('放量'); }
+    if (volRatio[i] != null && volRatio[i] >= volRatioBuy) { count++; hits.push('量比'); }
+    const to = ohlc[i] && ohlc[i].turnover;
+    if (to != null && to >= turnoverThr) { count++; hits.push('换手率'); }
+    if (ma5[i] != null && ma10[i] != null && closes[i] != null && closes[i] > ma5[i] && ma5[i] > ma10[i]) { count++; hits.push('MA5多头'); }
+    if (kk && kk[i - 1] != null && kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 50) { count++; hits.push('KDJ低位金叉'); }
+    if (rsi && rsi[i] != null && rsi[i] < 50) { count++; hits.push('RSI<50'); }
+    if (bias6 && bias6[i] != null && bias6[i] < 5) { count++; hits.push('乖离率<5'); }
+    return { count, hits };
+  };
+  return { volMA, ma5, ma10, volRatio, kk, dd, rsi, bias6, hitFactors, volMult, volRatioBuy, turnoverThr };
+}
+
+function signalMacdBoost(ctx) {
+  const { dif, dea, macd, n, signals, sellSource, ohlc, vols, closes, vp, boostParams } = ctx;
+  const bp = boostParams || {};
+  const useCross = bp.useCross !== false;
+  const useBar = bp.useBar !== false;
+  const shrinkDays = Math.max(1, bp.shrinkDays || 2);
+  const minFactors = Math.max(1, bp.minFactors || 2);
+  const useBullBuy = bp.useBullBuy !== false;
+  const panicPct = bp.panicPct != null ? bp.panicPct : -3;
+  const bf = buildBoostFactors(ohlc, closes, vols, vp, bp);
+  const { volMA, rsi, hitFactors } = bf;
+
   // 连续 days 日 macd 单调（dir=1 递减=红柱缩短，dir=-1 递增=绿柱缩短）
   const shrink = (i, days, dir) => {
     if (i < days) return false;
@@ -1746,42 +1856,22 @@ function signalMacdBoost(ctx) {
     return true;
   };
 
-  // 当日增强因子命中数（买入确认用）
-  const hitFactors = (i) => {
-    let f = 0;
-    // 1 放量：量 > N日均量 × 倍数
-    if (volMA[i] != null && vols[i] != null && vols[i] > volMA[i] * volMult) f++;
-    // 2 量比异动
-    if (volRatio[i] != null && volRatio[i] >= volRatioBuy) f++;
-    // 3 换手率活跃
-    const to = ohlc[i] && ohlc[i].turnover;
-    if (to != null && to >= turnoverThr) f++;
-    // 4 MA5多头：收盘 > MA5 > MA10
-    if (ma5[i] != null && ma10[i] != null && closes[i] != null && closes[i] > ma5[i] && ma5[i] > ma10[i]) f++;
-    // 5 辅助：KDJ低位金叉（K上穿D且K<50）
-    if (kk && kk[i - 1] != null && kk[i - 1] <= dd[i - 1] && kk[i] > dd[i] && kk[i] < 50) f++;
-    // 6 辅助：RSI未超买（<50）
-    if (rsi && rsi[i] != null && rsi[i] < 50) f++;
-    // 7 辅助：乖离率未严重超买（BIAS6<5）
-    if (bias6 && bias6[i] != null && bias6[i] < 5) f++;
-    return f;
-  };
-
   for (let i = 1; i < n; i++) {
     const golden = useCross && dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
     const greenShrink = useBar && macd[i] != null && macd[i] < 0 && shrink(i, shrinkDays, -1);
     const deathCross = useCross && dif[i - 1] > dea[i - 1] && dif[i] <= dea[i];
     const redShrink = useBar && macd[i] != null && macd[i] > 0 && shrink(i, shrinkDays, 1);
+    const fh = hitFactors(i);
 
     // 买入候选：金叉 或 绿柱缩短，须经量能增强确认
     if (golden || greenShrink) {
-      if (hitFactors(i) >= minFactors) { signals[i] = 'buy'; continue; }
+      if (fh.count >= minFactors) { signals[i] = 'buy'; continue; }
     }
 
     // 卖出候选：死叉 或 红柱缩短，按恐慌程度分级
     if (deathCross || redShrink) {
       const k = ohlc[i];
-      const volUp = volMA[i] != null && vols[i] != null && vols[i] > volMA[i] * volMult;
+      const volUp = volMA[i] != null && vols[i] != null && vols[i] > volMA[i] * bf.volMult;
       const downDay = k && k.close != null && k.open != null && k.close < k.open;
       const pct = k && k.pctChange != null ? k.pctChange
         : (k && k.close != null && k.open != null && k.open > 0 ? (k.close / k.open - 1) * 100 : 0);
@@ -1796,8 +1886,119 @@ function signalMacdBoost(ctx) {
         signals[i] = 'sellSoft';
         sellSource[i] = 'soft';
       }
+      continue;
+    }
+
+    // 多头补买：金叉状态(DIF>DEA)但错过金叉候选日（如回测起点已在多头/金叉被量能过滤），
+    // 当日量能确认即标 buyBull（引擎仅在未持仓时执行，持仓期间不会重复加仓）
+    if (useBullBuy && signals[i] == null && dif[i] > dea[i] && fh.count >= minFactors) {
+      signals[i] = 'buyBull';
     }
   }
+}
+
+// 获取 MACD 序列（与回测一致：优先数据库预计算列，否则全量重算含预热）
+function getMacdResultFor(ohlc, fast, slow, signal) {
+  const closes = ohlc.map(k => k.close);
+  const paramGroups = [
+    ['', 12, 26, 9], ['_6_12_5', 6, 12, 5], ['_3_8_3', 3, 8, 3], ['_10_20_7', 10, 20, 7],
+  ];
+  const hit = paramGroups.find(([, f, s, g]) => f === fast && s === slow && g === signal);
+  if (hit && ohlc[0] && ohlc[0][`macd_dif${hit[0]}`] != null) {
+    const suffix = hit[0];
+    return {
+      dif: ohlc.map(k => k[`macd_dif${suffix}`]),
+      dea: ohlc.map(k => k[`macd_dea${suffix}`]),
+      macd: ohlc.map(k => k[`macd_hist${suffix}`]),
+    };
+  }
+  const allCloses = window.__backtestAllCloses || closes;
+  const warmup = window.__backtestWarmup || 0;
+  const macdAll = calcMACD(allCloses, fast, slow, signal);
+  return { dif: macdAll.dif.slice(warmup), dea: macdAll.dea.slice(warmup), macd: macdAll.macd.slice(warmup) };
+}
+
+// 当前状态诊断：基于已加载数据的最新交易日，输出 MACD 环境 + 量能因子命中 + 下个交易日建议
+function diagnoseMacdBoost() {
+  const el = document.getElementById('boostDiag');
+  const ohlc = window.__backtestOhlc;
+  if (!ohlc || ohlc.length < 30) {
+    el.innerHTML = '<div class="note-box" style="margin-top:8px;border-color:#e8453c;background:#fff5f5;">请先在上方选择股票并点击「读取2年数据」，再查看当前状态与次日建议。</div>';
+    return;
+  }
+  const { fast, slow, signal } = getParams();
+  const sp = getStrategyParams();
+  const bp = sp.boostParams || {};
+  const minFactors = Math.max(1, bp.minFactors || 2);
+  const shrinkDays = Math.max(1, bp.shrinkDays || 2);
+  const useCross = bp.useCross !== false;
+  const useBar = bp.useBar !== false;
+  const panicPct = bp.panicPct != null ? bp.panicPct : -3;
+  const n = ohlc.length;
+  const i = n - 1;
+  const k = ohlc[i];
+  const closes = ohlc.map(x => x.close);
+  const vols = ohlc.map(x => x.volume);
+  const mr = getMacdResultFor(ohlc, fast, slow, signal);
+  const { dif, dea, macd } = mr;
+  const bf = buildBoostFactors(ohlc, closes, vols, sp.volParams, bp);
+  const fh = bf.hitFactors(i);
+
+  // 最近一次金叉/死叉
+  let lastGolden = -1, lastDeath = -1;
+  for (let j = n - 1; j >= 1; j--) {
+    if (lastGolden < 0 && dif[j - 1] <= dea[j - 1] && dif[j] > dea[j]) lastGolden = j;
+    if (lastDeath < 0 && dif[j - 1] > dea[j - 1] && dif[j] <= dea[j]) lastDeath = j;
+    if (lastGolden >= 0 && lastDeath >= 0) break;
+  }
+  // 红/绿柱连续缩短天数（截至最新日）
+  let redShrink = 0, greenShrink = 0;
+  const m0 = macd[i];
+  if (m0 != null && m0 > 0) {
+    for (let j = i; j >= 1 && macd[j] != null && macd[j - 1] != null && macd[j] < macd[j - 1]; j--) redShrink++;
+  } else if (m0 != null && m0 < 0) {
+    for (let j = i; j >= 1 && macd[j] != null && macd[j - 1] != null && macd[j] > macd[j - 1]; j--) greenShrink++;
+  }
+
+  // 与 signalMacdBoost 一致的候选/恐慌判定
+  const golden = useCross && dif[i - 1] <= dea[i - 1] && dif[i] > dea[i];
+  const greenShrinkSig = useBar && m0 != null && m0 < 0 && greenShrink >= shrinkDays;
+  const deathCross = useCross && dif[i - 1] > dea[i - 1] && dif[i] <= dea[i];
+  const redShrinkSig = useBar && m0 != null && m0 > 0 && redShrink >= shrinkDays;
+  const volUp = bf.volMA[i] != null && vols[i] != null && vols[i] > bf.volMA[i] * bf.volMult;
+  const downDay = k.close != null && k.open != null && k.close < k.open;
+  const pct = k.pctChange != null ? k.pctChange
+    : (k.open > 0 ? (k.close / k.open - 1) * 100 : 0);
+  const bigDown = pct <= panicPct;
+  const rsiHigh = bf.rsi && bf.rsi[i] != null && bf.rsi[i] > 70;
+
+  // 建议
+  let advice = '', adviceCls = '';
+  if (golden || greenShrinkSig) {
+    if (fh.count >= minFactors) { advice = '建议买入（金叉/绿柱缩短 + 量能确认）'; adviceCls = 'up'; }
+    else { advice = `买入候选但量能不足（命中${fh.count}/${minFactors}），建议观望等量能确认`; adviceCls = 'warn'; }
+  } else if (deathCross || redShrinkSig) {
+    if ((volUp && downDay) || bigDown || rsiHigh) { advice = '建议清仓（恐慌确认：放量下跌/大阴线/RSI高位）'; adviceCls = 'down'; }
+    else { advice = '温和回调：建议减仓做T 或 持有观察'; adviceCls = 'warn'; }
+  } else if (dif[i] > dea[i]) {
+    if (fh.count >= minFactors) { advice = '多头环境，建议买入（错过金叉后的补买，量能已确认）'; adviceCls = 'up'; }
+    else { advice = `多头环境但量能不足（命中${fh.count}/${minFactors}），建议持有观望`; adviceCls = 'warn'; }
+  } else {
+    advice = '空头环境，建议观望（等待金叉或绿柱缩短信号）'; adviceCls = 'down';
+  }
+
+  const env = dif[i] > dea[i] ? '<span class="up" style="font-weight:bold">多头（DIF>DEA）</span>' : '<span class="down" style="font-weight:bold">空头（DIF≤DEA）</span>';
+  const barTxt = m0 != null && m0 > 0 ? `红柱 ${m0.toFixed(3)}` : (m0 != null && m0 < 0 ? `绿柱 ${m0.toFixed(3)}` : '零轴附近');
+  const shrinkTxt = m0 > 0 ? `红柱连续缩短 <b>${redShrink}</b> 天` : (m0 < 0 ? `绿柱连续缩短 <b>${greenShrink}</b> 天` : '—');
+
+  el.innerHTML = `
+    <div class="note-box" style="margin-top:8px; border-color:#1a73e8; background:#f5f9ff;">
+      <div style="font-weight:bold; margin-bottom:6px;">当前状态诊断（MACD量能增强）</div>
+      <div>${k.date} 收盘 <b>${k.close != null ? fmt(k.close) : '-'}</b>（${pct >= 0 ? '+' : ''}${fmt(pct)}%）｜MACD环境：${env}｜${barTxt}</div>
+      <div>最近金叉：<b>${lastGolden >= 0 ? ohlc[lastGolden].date + '（' + (i - lastGolden) + '日前）' : '无'}</b>｜最近死叉：<b>${lastDeath >= 0 ? ohlc[lastDeath].date + '（' + (i - lastDeath) + '日前）' : '无'}</b>｜${shrinkTxt}</div>
+      <div>量能因子命中（需≥${minFactors}）：${fh.hits.length > 0 ? fh.hits.map(h => '<b>' + h + '</b>').join('、') : '无'}（命中 <b>${fh.count}</b>/7）｜换手率 <b>${k.turnover != null ? k.turnover.toFixed(2) + '%' : '-'}</b></div>
+      <div style="margin-top:6px; font-size:15px;">下个交易日建议：<span class="${adviceCls}" style="font-weight:bold">${advice}</span></div>
+    </div>`;
 }
 
 // 策略：超跌反弹规则——近5日累计跌≥8%且当日收阳买入；近5日累计涨≥12%卖出
@@ -1848,7 +2049,8 @@ const STRATEGY_HANDLERS = {
 };
 
 // 多头空仓补买适用的策略：以 MACD 金叉（DIF>DEA）为核心买入/持仓依据的策略
-const BULL_BUY_STRATEGIES = new Set(['cross', 'triple', 'macdRsi', 'macdKdj', 'kdjBottom']);
+// 含柱类策略（rate 速率 / bar 红绿柱 / macdBoost 量能增强）：多头区间错过金叉/红柱起点时无买点，需补买
+const BULL_BUY_STRATEGIES = new Set(['cross', 'triple', 'macdRsi', 'macdKdj', 'kdjBottom', 'rate', 'bar', 'macdBoost']);
 
 // ============ 手续费计算 ============
 // 买入：佣金 + 过户费；卖出：佣金 + 印花税 + 过户费
@@ -2864,6 +3066,13 @@ function resetStrategyParams() {
   document.getElementById('enableTrendFilter').checked = false;
   document.getElementById('trendMode').value = 'both';
   document.getElementById('enableBullBuy').checked = true;
+  document.getElementById('bullFreshDays').value = 5;
+  document.getElementById('bullStartBuy').checked = true;
+  document.getElementById('bullPullback').checked = true;
+  document.getElementById('bullSkipExtended').checked = true;
+  document.getElementById('bullSkipDays').value = 5;
+  document.getElementById('bullSellShrink').checked = false;
+  document.getElementById('bullSellShrinkDays').value = 3;
   document.getElementById('boostMinFactors').value = 2;
   document.getElementById('boostShrinkDays').value = 2;
   document.getElementById('boostTurnoverThr').value = 2.5;
@@ -2871,6 +3080,7 @@ function resetStrategyParams() {
   document.getElementById('boostSoftSellRatio').value = 0.5;
   document.getElementById('boostUseCross').checked = true;
   document.getElementById('boostUseBar').checked = true;
+  document.getElementById('boostUseBullBuy').checked = true;
   document.getElementById('boostUseKdj').checked = false;
   document.getElementById('boostUseRsi').checked = false;
   document.getElementById('boostUseBias').checked = false;
@@ -2937,7 +3147,18 @@ function getStrategyParams() {
       enabled: document.getElementById('enableTrendFilter').checked,
       mode: document.getElementById('trendMode').value
     },
-    bullBuy: document.getElementById('enableBullBuy').checked,
+    bullBuy: {
+      enabled: document.getElementById('enableBullBuy').checked,
+      params: {
+        freshDays: parseInt(document.getElementById('bullFreshDays').value),
+        startBuy: document.getElementById('bullStartBuy').checked,
+        pullback: document.getElementById('bullPullback').checked,
+        skipExtended: document.getElementById('bullSkipExtended').checked,
+        skipDays: parseInt(document.getElementById('bullSkipDays').value),
+        sellShrink: document.getElementById('bullSellShrink').checked,
+        sellShrinkDays: parseInt(document.getElementById('bullSellShrinkDays').value)
+      }
+    },
     boostParams: {
       minFactors: parseInt(document.getElementById('boostMinFactors').value),
       shrinkDays: parseInt(document.getElementById('boostShrinkDays').value),
@@ -2946,6 +3167,7 @@ function getStrategyParams() {
       softSellRatio: parseFloat(document.getElementById('boostSoftSellRatio').value),
       useCross: document.getElementById('boostUseCross').checked,
       useBar: document.getElementById('boostUseBar').checked,
+      useBullBuy: document.getElementById('boostUseBullBuy').checked,
       useKdj: document.getElementById('boostUseKdj').checked,
       useRsi: document.getElementById('boostUseRsi').checked,
       useBias: document.getElementById('boostUseBias').checked
@@ -3015,7 +3237,21 @@ function applyStrategyParams(params) {
     setFormField('enableTrendFilter', sp.trendFilter.enabled);
     setFormField('trendMode', sp.trendFilter.mode);
   }
-  setFormField('enableBullBuy', sp.bullBuy);
+  // 兼容：旧策略 bullBuy 为布尔值，新策略为 {enabled, params}
+  const bull = sp.bullBuy;
+  if (typeof bull === 'object' && bull !== null) {
+    setFormField('enableBullBuy', bull.enabled);
+    const bp = bull.params || {};
+    setFormField('bullFreshDays', bp.freshDays);
+    setFormField('bullStartBuy', bp.startBuy);
+    setFormField('bullPullback', bp.pullback);
+    setFormField('bullSkipExtended', bp.skipExtended);
+    setFormField('bullSkipDays', bp.skipDays);
+    setFormField('bullSellShrink', bp.sellShrink);
+    setFormField('bullSellShrinkDays', bp.sellShrinkDays);
+  } else {
+    setFormField('enableBullBuy', bull);
+  }
   if (sp.boostParams) {
     setFormField('boostMinFactors', sp.boostParams.minFactors);
     setFormField('boostShrinkDays', sp.boostParams.shrinkDays);
@@ -3024,6 +3260,7 @@ function applyStrategyParams(params) {
     setFormField('boostSoftSellRatio', sp.boostParams.softSellRatio);
     setFormField('boostUseCross', sp.boostParams.useCross);
     setFormField('boostUseBar', sp.boostParams.useBar);
+    setFormField('boostUseBullBuy', sp.boostParams.useBullBuy);
     setFormField('boostUseKdj', sp.boostParams.useKdj);
     setFormField('boostUseRsi', sp.boostParams.useRsi);
     setFormField('boostUseBias', sp.boostParams.useBias);
@@ -3282,6 +3519,21 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
     indicatorParams = `MACD参数: (${cfg.fast}, ${cfg.slow}, ${cfg.signal})`;
   }
 
+  // 多头补买综合规则摘要（兼容旧策略布尔值 bullBuy）
+  const rawBull = cfg.sp.bullBuy;
+  const bullOn = typeof rawBull === 'object' ? !!rawBull.enabled : !!rawBull;
+  const bullP = (typeof rawBull === 'object' && rawBull.params) || {};
+  let bullBuyDesc = '关闭';
+  if (bullOn) {
+    const parts = [];
+    if (bullP.startBuy !== false) parts.push('起点补买');
+    parts.push(`金叉后${bullP.freshDays != null ? bullP.freshDays : 5}日内`);
+    if (bullP.pullback !== false) parts.push('回调结束补买');
+    if (bullP.skipExtended !== false) parts.push(`连涨${bullP.skipDays != null ? bullP.skipDays : 5}日不追`);
+    if (bullP.sellShrink) parts.push(`红柱缩短${bullP.sellShrinkDays != null ? bullP.sellShrinkDays : 3}日卖出`);
+    bullBuyDesc = '启用[' + parts.join('/') + ']';
+  }
+
   document.getElementById('resultArea').innerHTML = `
     <div class="panel">
       <h2>回测结果摘要</h2>
@@ -3298,7 +3550,7 @@ function renderResults(ohlc, macdResult, result, m, cfg) {
         水上仅死叉: ${cfg.sp.aboveWaterOnly ? '启用' : '关闭'} |
         金叉强度确认: ${cfg.sp.buyStrength.enabled ? `启用(柱≥${cfg.sp.buyStrength.threshold}才买)` : '关闭'} |
         下降趋势过滤: ${cfg.sp.trendFilter.enabled ? `启用(${trendModeLabel(cfg.sp.trendFilter.mode)},延迟补买)` : '关闭'} |
-        多头空仓补买: ${cfg.sp.bullBuy ? '启用' : '关闭'} |
+        多头空仓补买: ${bullBuyDesc} |
         手续费: 佣金${cfg.sp.feeCfg.commissionRate}万(最低${cfg.sp.feeCfg.commissionMin}元) + 印花税${cfg.sp.feeCfg.stampTax}千 + 过户费${cfg.sp.feeCfg.transferFee}万
       </div>
       <div class="result-grid">
